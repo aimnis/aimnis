@@ -44,6 +44,7 @@ async def _remote_search(query: str) -> str:
 
 
 async def _remote_stats() -> str:
+    import dataclasses
     import httpx
 
     headers = {}
@@ -52,7 +53,14 @@ async def _remote_stats() -> str:
     async with httpx.AsyncClient(timeout=settings.gateway_timeout_seconds) as client:
         r = await client.get(f"{settings.gateway_url.rstrip('/')}/v1/stats", headers=headers)
         r.raise_for_status()
-    return stats_mod.format_for_agent(stats_mod.Stats(**r.json()))
+        data = r.json()
+    # /v1/stats carries extra key-holder detail (e.g. click_analytics) beyond the
+    # Stats dataclass fields; keep only the known fields so added keys never break
+    # the client.
+    field_names = {f.name for f in dataclasses.fields(stats_mod.Stats)}
+    return stats_mod.format_for_agent(
+        stats_mod.Stats(**{k: v for k, v in data.items() if k in field_names})
+    )
 
 
 @mcp.tool()

@@ -5,8 +5,22 @@ from __future__ import annotations
 
 import pytest
 
-from aimnis import pool
+from aimnis import embedding, pool
+from aimnis.config import settings
 from aimnis.normalize import normalize, query_hash
+
+
+def test_check_model_supported_rejects_garbage(monkeypatch):
+    # A mis-pasted / bogus AIMNIS_EMBEDDING_MODEL must fail fast with a clear error
+    # (this is what would have turned the Railway 500 loop into one glance).
+    monkeypatch.setattr(settings, "embedding_model", "XcYC_not-a-real-model")
+    with pytest.raises(RuntimeError, match="not a supported"):
+        embedding.check_model_supported()
+
+
+def test_check_model_supported_accepts_default():
+    # The shipped default must be a real fastembed model.
+    embedding.check_model_supported()
 
 
 def _embed_or_skip(text: str):

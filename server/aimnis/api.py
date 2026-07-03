@@ -16,7 +16,7 @@ from dataclasses import asdict
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from . import citations, db, stats
+from . import citations, db, embedding, stats
 from .config import settings
 
 # Gate 1 pass line: hit rate should climb past ~30% as the corpus grows.
@@ -25,6 +25,10 @@ _TARGET = 0.30
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail fast on a misconfigured embedding model (e.g. a mis-pasted env var):
+    # otherwise it only surfaces as a 500 on the first /v1/search. Cheap name check,
+    # no model download.
+    embedding.check_model_supported()
     await db.get_pool()
     yield
     await db.close_pool()
