@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-api = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]  # REST edge + dashboard
+api = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9"]  # REST edge + dashboard + portal forms
 mcp = ["mcp>=1.2"]                                    # stdio MCP server
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4"]
 

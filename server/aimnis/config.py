@@ -133,6 +133,26 @@ class Settings(BaseSettings):
     gateway_client_api_key: str | None = None
     gateway_timeout_seconds: float = 30.0
 
+    # Self-serve eval portal (aimnis.com). Client keys issued by the portal live in
+    # the DB (api_client) and are metered; the env-var gateway_api_keys above remain
+    # an ADMIN/bootstrap path (unlimited, unmetered). Default per-key caps ration the
+    # shared upstream quota — keep rpd well under the ~1,000/day service ceiling so a
+    # single key can't starve the pool for everyone; hits are free, only misses spend.
+    client_default_rpm: int = 20
+    client_default_rpd: int = 200
+    # Admin key for the portal's operator endpoints (pause/resume registration, etc.).
+    # Unset ⇒ those endpoints are disabled (fail-closed) — flip flags in the DB instead.
+    admin_api_key: str | None = None
+    # Public base URL of the portal, used in issued-key / waitlist emails and links.
+    portal_base_url: str = "https://aimnis.com"
+
+    # Transactional email (Resend). Real inbox delivery needs a provider + DNS auth
+    # (SPF/DKIM/DMARC on aimnis.com) — the Railway box can't send mail directly. With
+    # no key set, email is a logged no-op so the portal still works in dev / self-host.
+    resend_api_key: str | None = None
+    resend_endpoint: str = "https://api.resend.com/emails"
+    email_from: str = "Aimnis <eval@aimnis.com>"
+
     # Citation routing — cited source links can be routed through a signed
     # /r/<token> redirect that logs a click (aggregate relevance signal: which
     # pooled entries earn follow-through, which sources are dead weight) before
@@ -188,7 +208,7 @@ class Settings(BaseSettings):
     distill_max_tokens: int = 1024          # headroom for reasoning models' hidden reasoning tokens
     distill_purpose: str = "interactive_fallback"  # quota sub-budget this spends from
     # Courtesy attribution headers OpenRouter uses for its app leaderboard.
-    openrouter_referer: str = "https://aimnis.org"
+    openrouter_referer: str = "https://aimnis.com"
     openrouter_title: str = "Aimnis"
 
     # Quality gate — decides whether a distilled answer is trustworthy enough to

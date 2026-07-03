@@ -12,7 +12,7 @@ import pytest
 from aimnis import llm, models, quota, resolve
 from aimnis.config import settings
 from aimnis.quota import Reservation
-from aimnis.search import SearchError, SearchResult
+from aimnis.search import SearchResult
 
 _RESULTS = [
     SearchResult(title="pgvector README", url="http://a", snippet="register_vector(conn)"),

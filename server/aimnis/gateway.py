@@ -8,10 +8,13 @@ and does the resolution server-side.
     POST /v1/search   {"query": "..."}   -> resolution result (JSON)
     GET  /v1/stats                        -> flywheel stats (JSON)
 
-Auth is FAIL-CLOSED: if `settings.gateway_api_keys` is empty the routes refuse with
-503, so a public deploy can't accidentally serve unauthenticated, quota-spending
-search to the whole internet. With keys configured, callers send one as a bearer
-token (`Authorization: Bearer <key>`) or `X-API-Key: <key>`.
+Auth is FAIL-CLOSED — no request is served without a valid key. Two key sources:
+  * env allowlist (`AIMNIS_GATEWAY_API_KEYS`) — the ADMIN/bootstrap path: unlimited,
+    unmetered, constant-time compared. This is the operator's own key.
+  * DB-backed client keys (`api_client`) — the self-serve EVAL keys the portal issues:
+    metered per key (per-minute + per-day caps) and revocable at any time without a
+    redeploy. A cap breach returns 429; an unknown/revoked key returns 401.
+Callers send a key as a bearer token (`Authorization: Bearer <key>`) or `X-API-Key`.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from dataclasses import asdict
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from . import db, resolve, stats
+from . import apikeys, db, resolve, stats
 from .config import settings
 
 router = APIRouter(prefix="/v1")
@@ -32,25 +35,30 @@ async def require_api_key(
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None),
 ) -> str:
-    """Fail-closed bearer/X-API-Key auth against the configured key allowlist."""
-    if not settings.gateway_api_keys:
-        # No keys configured → the gateway is intentionally not open. This protects
-        # the upstream quota; set AIMNIS_GATEWAY_API_KEYS to expose it.
-        raise HTTPException(status_code=503, detail="gateway disabled (no API keys configured)")
-
+    """Fail-closed bearer/X-API-Key auth: env admin keys, then metered DB client keys."""
     presented = x_api_key
     if not presented and authorization and authorization.lower().startswith("bearer "):
         presented = authorization[7:].strip()
-    # Constant-time compare against every configured key: a plain `in` test both
-    # short-circuits and compares byte-by-byte, leaking key material via response
-    # timing. hmac.compare_digest is fixed-time; we OR over the allowlist so the
-    # number of comparisons doesn't depend on which key (if any) matches.
-    ok = bool(presented) and any(
-        hmac.compare_digest(presented, k) for k in settings.gateway_api_keys
-    )
-    if not ok:
+    if not presented:
         raise HTTPException(status_code=401, detail="invalid or missing API key")
-    return presented
+
+    # Admin/bootstrap path: env allowlist, unlimited + unmetered. Constant-time compare
+    # (a plain `in` short-circuits byte-by-byte, leaking key material via timing);
+    # hmac.compare_digest is fixed-time and we OR over the allowlist so the number of
+    # comparisons doesn't depend on which key (if any) matches.
+    if settings.gateway_api_keys and any(
+        hmac.compare_digest(presented, k) for k in settings.gateway_api_keys
+    ):
+        return presented
+
+    # Metered self-serve path: authenticate + rate-limit + log in one atomic DB call.
+    pool = await db.get_pool()
+    res = await apikeys.reserve(pool, presented)
+    if res.granted:
+        return presented
+    if res.reason in ("rate_minute", "rate_day"):
+        raise HTTPException(status_code=429, detail=f"rate limit exceeded ({res.reason})")
+    raise HTTPException(status_code=401, detail="invalid or missing API key")
 
 
 class SearchRequest(BaseModel):

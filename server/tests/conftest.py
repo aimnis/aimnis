@@ -83,6 +83,13 @@ async def clean():
     await pool.execute("TRUNCATE upstream_call")
     await pool.execute("TRUNCATE pool_entry CASCADE")  # cascades to citation_click (FK)
     await pool.execute("TRUNCATE lookup_event")
+    await pool.execute("TRUNCATE api_client CASCADE")  # cascades to api_request (FK)
+    await pool.execute("TRUNCATE waitlist")
+    # Registration defaults to open; reset in case a test paused it.
+    await pool.execute(
+        "INSERT INTO service_flag (name, enabled) VALUES ('registration_open', true) "
+        "ON CONFLICT (name) DO UPDATE SET enabled = true"
+    )
     try:
         yield pool
     finally:

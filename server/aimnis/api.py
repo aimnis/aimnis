@@ -1,8 +1,11 @@
-"""Public flywheel dashboard — the Gate 1 pass/kill instrument, made visible.
+"""Web service entrypoint — the single hosted process.
 
-Serves a self-contained HTML page (server-rendered inline SVG, no external deps)
-plotting cache hit rate against cumulative unique queries, plus a JSON metrics
-endpoint for build-in-public / programmatic access.
+Mounts three things in one FastAPI app: the public **portal** (landing, self-serve
+eval-key registration, terms, waitlist — see portal.py, owns `/`), the remote REST
+**gateway** (`/v1/*` — see gateway.py), and the **flywheel dashboard** (the Gate 1
+pass/kill instrument at `/flywheel`): a self-contained HTML page (server-rendered
+inline SVG, no external deps) plotting cache hit rate against cumulative unique
+queries, plus a JSON metrics endpoint (`/api/stats`) for build-in-public access.
 
     uvicorn aimnis.api:app          # or: python -m aimnis.api  /  aimnis-dashboard
 """
@@ -36,11 +39,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Aimnis Flywheel", lifespan=lifespan)
 
-# The remote REST edge (POST /v1/search, GET /v1/stats). Same process as the
+# The remote REST edge (POST /v1/search, GET /v1/stats) and the public portal
+# (landing, self-serve eval-key registration, terms, waitlist). Same process as the
 # dashboard so the hosted deploy is a single web service.
 from .gateway import router as gateway_router  # noqa: E402
+from .portal import router as portal_router  # noqa: E402
 
 app.include_router(gateway_router)
+app.include_router(portal_router)
 
 
 @app.get("/healthz")
@@ -89,7 +95,7 @@ async def api_stats():
     })
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/flywheel", response_class=HTMLResponse)
 async def dashboard():
     pool = await db.get_pool()
     s = await stats.gather(pool)

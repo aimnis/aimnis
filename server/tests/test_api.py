@@ -56,7 +56,7 @@ async def test_dashboard_html(clean, monkeypatch):
     await stats.record_event(clean, query_hash="h", outcome="hit_exact")
 
     async with _client(clean, monkeypatch) as c:
-        r = await c.get("/")
+        r = await c.get("/flywheel")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
     body = r.text
@@ -68,7 +68,7 @@ async def test_dashboard_html(clean, monkeypatch):
 
 async def test_dashboard_empty_pool_renders(clean, monkeypatch):
     async with _client(clean, monkeypatch) as c:
-        r = await c.get("/")
+        r = await c.get("/flywheel")
     assert r.status_code == 200
     assert "No lookups yet" in r.text  # empty-series message, no crash
 
@@ -137,7 +137,7 @@ async def test_click_detail_is_gated_behind_api_key(clean, monkeypatch):
     async with _client(clean, monkeypatch) as c:
         await c.get(f"/r/{tok}", follow_redirects=False)
         await c.get(f"/r/{tok}", follow_redirects=False)
-        page = (await c.get("/")).text
+        page = (await c.get("/flywheel")).text
         pub = (await c.get("/api/stats")).json()
         authed = (await c.get("/v1/stats", headers={"X-API-Key": "secret"})).json()
 
@@ -184,11 +184,16 @@ async def test_citation_redirect_refuses_non_http_scheme(clean, monkeypatch):
 # --- HTTP gateway (/v1) ----------------------------------------------------- #
 
 async def test_gateway_fail_closed_without_keys(clean, monkeypatch):
-    """No keys configured ⇒ the /v1 routes refuse (503), never open to the world."""
+    """No env keys AND no DB client keys ⇒ every /v1 request is refused (401), never
+    open to the world. (Auth now also accepts DB-backed client keys, so 'no env keys'
+    is a normal production state — but nothing is served without a valid key.)"""
     monkeypatch.setattr(settings, "gateway_api_keys", [])
     async with _client(clean, monkeypatch) as c:
-        assert (await c.get("/v1/stats")).status_code == 503
-        assert (await c.post("/v1/search", json={"query": "x"})).status_code == 503
+        assert (await c.get("/v1/stats")).status_code == 401                      # no key at all
+        assert (await c.post("/v1/search", json={"query": "x"})).status_code == 401
+        # An arbitrary key that matches no env key and no DB client is also refused.
+        r = await c.get("/v1/stats", headers={"X-API-Key": "nope"})
+        assert r.status_code == 401
 
 
 async def test_gateway_rejects_bad_key(clean, monkeypatch):
