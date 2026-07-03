@@ -1,0 +1,54 @@
+name: repo-guard
+
+# Safety net for the PUBLIC repo. publish.sh already syncs only an allowlisted,
+# git-tracked subset from the private monorepo — this catches anything that slips
+# past it (a stray commit, a bad sync, a secret in a diff) BEFORE it lives in a
+# public branch. Two independent gates, both hard-fail.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  forbidden-paths:
+    name: no private paths
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if private-only paths are present
+        run: |
+          set -euo pipefail
+          # These exist only in the private monorepo and must NEVER be published:
+          # memory/ and private/ (working memory + anti-abuse config), CLAUDE.md,
+          # and any .env* except the .env.example template.
+          bad="$(git ls-files \
+            | grep -E '(^|/)(memory|private)/|(^|/)CLAUDE\.md$|(^|/)\.env(\.|$)' \
+            | grep -vE '(^|/)\.env\.example$' || true)"
+          if [ -n "$bad" ]; then
+            echo "::error::Forbidden private paths found in the public repo:"
+            echo "$bad" | sed 's/^/  - /'
+            exit 1
+          fi
+          echo "OK — no private-only paths present."
+
+  secret-scan:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # scan full history, not just the tip
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          VER=8.18.4
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Scan for secrets
+        # Uses .gitleaks.toml at the repo root (default ruleset + fixture allowlist).
+        run: gitleaks detect --no-banner --redact --verbose

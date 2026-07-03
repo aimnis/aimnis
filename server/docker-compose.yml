@@ -1,0 +1,35 @@
+# Local dev Postgres with pgvector. `docker compose up -d` then `python -m aimnis.migrate`.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: aimnis
+      POSTGRES_PASSWORD: aimnis
+      POSTGRES_DB: aimnis
+    ports:
+      - "5432:5432"
+    volumes:
+      - aimnis_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aimnis"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Keyless live-fallback search — the LAST-resort floor in the provider chain
+  # (Brave → Tavily → Exa → SearXNG). Opt-in so the default footprint is just
+  # Postgres: bring it up with `docker compose --profile keyless up -d` when you
+  # want to run without any search API key. Hosted deploys use keyed providers and
+  # don't run this container at all.
+  searxng:
+    image: searxng/searxng:latest
+    profiles: ["keyless"]
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+
+volumes:
+  aimnis_pgdata:

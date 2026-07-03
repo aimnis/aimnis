@@ -1,0 +1,46 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.json",
+  "name": "io.github.aimnis/search",
+  "description": "Collaborative, cache-first web search for agents — cited answers from a shared, live web pool.",
+  "repository": {
+    "url": "https://github.com/aimnis/aimnis",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "websiteUrl": "https://aimnis.org",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "aimnis-server",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "transport": { "type": "stdio" },
+      "runtimeArguments": [
+        {
+          "type": "named",
+          "name": "--from",
+          "value": "aimnis-server[mcp]",
+          "description": "Install the package with the MCP extra, then run its console script."
+        }
+      ],
+      "packageArguments": [
+        { "type": "positional", "value": "aimnis-search" }
+      ],
+      "environmentVariables": [
+        {
+          "name": "AIMNIS_GATEWAY_URL",
+          "description": "URL of the hosted Aimnis gateway to join the shared pool (e.g. https://api.aimnis.org). Omit to run fully local against your own Postgres (set AIMNIS_DATABASE_URL instead).",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "AIMNIS_GATEWAY_CLIENT_API_KEY",
+          "description": "API key for the hosted gateway (required when AIMNIS_GATEWAY_URL is set).",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

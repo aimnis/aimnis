@@ -1,0 +1,13 @@
+# Minimal SearXNG config for local dev live-fallback. JSON format enabled so the
+# Aimnis search client can consume results. Not for production as-is.
+use_default_settings: true
+
+server:
+  secret_key: "dev-secret-change-me"
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json

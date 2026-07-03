@@ -1,0 +1,36 @@
+[project]
+name = "aimnis-server"
+version = "0.1.0"
+description = "Aimnis server core — cache-first knowledge gateway (AGPLv3)"
+requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+dependencies = [
+    "asyncpg>=0.29",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "pgvector>=0.3",
+    "fastembed>=0.3",  # local ONNX embeddings (no torch)
+    "httpx>=0.27",     # SearXNG live-fallback client
+]
+
+[project.optional-dependencies]
+api = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]  # REST edge + dashboard
+mcp = ["mcp>=1.2"]                                    # stdio MCP server
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4"]
+
+[project.scripts]
+aimnis-search = "aimnis.mcp_server:main"
+aimnis-dashboard = "aimnis.api:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["aimnis"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100

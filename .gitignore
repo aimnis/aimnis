@@ -1,0 +1,43 @@
+# Secrets / credentials — never commit
+.env
+.env.*
+# ...but DO track the (secret-free) template (inline comments are NOT valid in
+# .gitignore — they become part of the pattern and silently break the negation):
+!.env.example
+*.pem
+*.key
+secrets/
+**/credentials*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Local data / models
+*.sqlite
+*.db
+data/
+models/
+
+# Python venv (server)
+server/.venv/
+
+# Claude Code personal settings (dogfood toggle etc.)
+.claude/settings.local.json

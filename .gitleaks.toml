@@ -1,0 +1,20 @@
+# gitleaks config for the public Aimnis repo (auto-detected at the repo root).
+#
+# Uses the full default ruleset, plus a TIGHT allowlist for the only known false
+# positives in the published tree: the test files that must contain fake,
+# secret-shaped fixtures precisely because they test the ingress secret scrubber
+# and the distillation path. Nothing else is exempt — real secrets anywhere else
+# still fail the scan. Keep this list minimal; add a file only after confirming
+# its match is a deliberate test fixture, never to silence a real leak.
+
+title = "aimnis"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Deliberate secret-shaped test fixtures (not real secrets)."
+paths = [
+  '''server/tests/test_scrub\.py''',
+  '''server/tests/test_distill\.py''',
+]
