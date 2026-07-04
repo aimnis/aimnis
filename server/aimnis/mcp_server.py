@@ -14,7 +14,11 @@ The tool appears to the model as `mcp__aimnis_search__search`.
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from . import resolve
 from . import stats as stats_mod
@@ -70,8 +74,34 @@ async def _remote_stats() -> str:
     )
 
 
-@mcp.tool()
-async def search(query: str, reject_entry: str | None = None) -> str:
+@mcp.tool(
+    # structured_output surfaces an outputSchema (the returned text under `result`)
+    # for clients/registries that expect one; the human-readable text content is
+    # still returned unchanged alongside it.
+    structured_output=True,
+    annotations=ToolAnnotations(
+        title="Aimnis web search",
+        # Does not modify the caller's environment; the opt-in, PII-scrubbed pool
+        # contribution on a miss is an internal service side effect, not a mutation
+        # of any resource the caller owns.
+        readOnlyHint=True,
+        # Reaches out to the open web on a cache miss.
+        openWorldHint=True,
+    ),
+)
+async def search(
+    query: Annotated[
+        str,
+        Field(description="The natural-language question, error message, or "
+                          "library/API/docs lookup to search for."),
+    ],
+    reject_entry: Annotated[
+        str | None,
+        Field(description="Entry id from a previous response whose cached answer did "
+                          "not match your question; set it to skip that entry and "
+                          "force a live search on retry."),
+    ] = None,
+) -> str:
     """Search the web via Aimnis.
 
     Returns cached, provenance-tagged results instantly when the question (or a
@@ -101,7 +131,16 @@ async def search(query: str, reject_entry: str | None = None) -> str:
     return resolve.format_for_agent(result)
 
 
-@mcp.tool()
+@mcp.tool(
+    structured_output=True,
+    annotations=ToolAnnotations(
+        title="Aimnis flywheel stats",
+        readOnlyHint=True,
+        # Reports internal pool metrics only — no external calls, repeatable.
+        openWorldHint=False,
+        idempotentHint=True,
+    ),
+)
 async def stats() -> str:
     """Report Aimnis flywheel statistics: knowledge-pool (cache) size, cache hit
     rate (all-time and recent), and the most-reused queries.

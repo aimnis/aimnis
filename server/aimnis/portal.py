@@ -384,7 +384,7 @@ async def landing() -> HTMLResponse:
   <div class="hero">
     <div>
       <h1>Aimnis</h1>
-      <p class="tag">Collaborative search for agents. Search once, answer everyone.</p>
+      <p class="tag">Collaborative search for agents. The <b>faster</b> and <b>cheaper</b> agentic search tool.</p>
       <p>Your coding agent keeps re-searching the same things — the new library version, the
       same error message, the same API change — and you wait and pay every time. <b>Aimnis
       gives your agent a shared memory of the web.</b> Anything that anyone's agent has asked
