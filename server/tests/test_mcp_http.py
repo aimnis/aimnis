@@ -50,16 +50,47 @@ async def _client(pool, monkeypatch):
             yield c
 
 
-async def test_mcp_requires_key(clean, monkeypatch):
+async def test_mcp_keyless_handshake_succeeds(clean, monkeypatch):
+    # A key-less connection must be able to complete the handshake: a 401 during
+    # initialize dies inside the MCP client library where nobody reads it. The
+    # agent should connect, see the tools, and learn about keys on first call.
     monkeypatch.setattr(settings, "gateway_api_keys", [])
     async with _client(clean, monkeypatch) as c:
         r = await c.post("/mcp", headers=_MCP_HEADERS, json=_TOOLS_LIST)
-        assert r.status_code == 401
-        # Agents read error bodies: a 401 must point at self-serve onboarding.
-        assert "aimnis.com/register" in r.json().get("hint", "")
-        r = await c.post("/mcp", headers={**_MCP_HEADERS, "X-API-Key": "nope"},
-                         json=_TOOLS_LIST)
-        assert r.status_code == 401
+    assert r.status_code == 200
+    assert {t["name"] for t in r.json()["result"]["tools"]} >= {"search", "stats"}
+    # Nothing metered, nothing recorded for anonymous chatter.
+    assert await clean.fetchval("SELECT count(*) FROM api_request") == 0
+
+
+async def test_mcp_keyless_tool_call_gets_onboarding_message(clean, monkeypatch):
+    # The key-less tools/call is the onboarding surface: a JSON-RPC tool result
+    # (isError) whose text lands in the model's context and points at /register.
+    monkeypatch.setattr(settings, "gateway_api_keys", [])
+    async with _client(clean, monkeypatch) as c:
+        r = await c.post("/mcp", headers=_MCP_HEADERS, json=_tools_call("x"))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == 1  # echoes the request id
+    assert body["result"]["isError"] is True
+    text = body["result"]["content"][0]["text"]
+    assert "aimnis.com/register" in text and "Bearer aim_" in text
+    # No search ran, nothing was metered.
+    assert await clean.fetchval("SELECT count(*) FROM api_request") == 0
+    assert await clean.fetchval("SELECT count(*) FROM lookup_event") == 0
+
+
+async def test_mcp_presented_bad_key_still_401(clean, monkeypatch):
+    # Key-less is onboarding; a PRESENTED but invalid key is refused outright —
+    # with the self-serve hint in the body and WWW-Authenticate for MCP clients.
+    monkeypatch.setattr(settings, "gateway_api_keys", [])
+    async with _client(clean, monkeypatch) as c:
+        for payload in (_TOOLS_LIST, _tools_call("x")):
+            r = await c.post("/mcp", headers={**_MCP_HEADERS, "X-API-Key": "nope"},
+                             json=payload)
+            assert r.status_code == 401
+            assert "aimnis.com/register" in r.json().get("hint", "")
+            assert r.headers["www-authenticate"].startswith("Bearer")
 
 
 async def test_mcp_tools_list_with_client_key_is_unmetered(clean, monkeypatch):

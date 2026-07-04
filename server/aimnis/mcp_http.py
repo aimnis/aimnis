@@ -16,10 +16,18 @@ nested-router path gymnastics under a FastAPI mount.
 Auth enforces the SAME key model as the REST gateway (see gateway.py): env admin
 keys pass unmetered; DB client keys are authenticated on every message but METERED
 only on `tools/call` — MCP protocol chatter (initialize, tools/list, pings)
-shouldn't burn a caller's daily quota. Fail-closed: no valid key ⇒ 401 before the
-request reaches the MCP layer; a cap breach ⇒ 429. Stateless + JSON responses:
-every POST is self-contained, which suits a metered public edge (no server-side
-session state to leak or exhaust).
+shouldn't burn a caller's daily quota. A cap breach ⇒ 429. Stateless + JSON
+responses: every POST is self-contained, which suits a metered public edge (no
+server-side session state to leak or exhaust).
+
+KEY-LESS connections are allowed to handshake (initialize/tools/list — static,
+free, unmetered even for keyed clients) but a key-less `tools/call` gets an
+in-band onboarding message instead of results. Rationale: a 401 during
+`initialize` dies inside the MCP client library — the human sees "connection
+failed" and the model sees nothing — whereas a tool result lands in the model's
+context, the one place guaranteed to be read. Fail-closed still holds where it
+matters: nothing that costs money runs without a valid key, and a PRESENTED but
+invalid/revoked key is still refused outright (401) on every message.
 """
 
 from __future__ import annotations
@@ -50,6 +58,33 @@ def _is_admin(presented: str) -> bool:
     return bool(settings.gateway_api_keys) and any(
         hmac.compare_digest(presented, k) for k in settings.gateway_api_keys
     )
+
+
+_ANON_CALL_TEXT = (
+    "You are connected to Aimnis without an API key, so search is not enabled yet. "
+    "Get a free eval key by email at https://aimnis.com/register, then send it on "
+    "this MCP connection as 'Authorization: Bearer aim_...' (or 'X-API-Key') — "
+    "per-agent setup guides: https://aimnis.com/setup. Please relay this to the "
+    "user so they can add the key."
+)
+
+
+def _anon_call_response(body: bytes) -> bytes:
+    """JSON-RPC reply for a key-less tools/call: a successful transport response
+    whose tool result carries the onboarding message (isError, so the agent
+    treats it as 'this call needs fixing', not as an answer)."""
+    try:
+        msg = json.loads(body)
+    except Exception:  # noqa: BLE001
+        msg = {}
+    msgs = msg if isinstance(msg, list) else [msg]
+    call = next((m for m in msgs if isinstance(m, dict) and m.get("method") == "tools/call"), {})
+    return json.dumps({
+        "jsonrpc": "2.0",
+        "id": call.get("id", 0),
+        "result": {"content": [{"type": "text", "text": _ANON_CALL_TEXT}],
+                   "isError": True},
+    }).encode()
 
 
 def _wants_tool_call(body: bytes) -> bool:
@@ -89,32 +124,32 @@ class McpEdge:
         if scope["type"] != "http":
             return
 
-        async def respond(status: int, message: str) -> None:
-            payload = {"error": message}
-            if status == 401:
-                # Agents DO read error bodies (they surface to the model), so a 401
-                # is a self-serve onboarding surface, not just a refusal.
-                payload["hint"] = (
-                    "Send a key as 'Authorization: Bearer aim_...' or 'X-API-Key'. "
-                    "Free eval keys: https://aimnis.com/register — setup guides: "
-                    "https://aimnis.com/setup"
-                )
-            body = json.dumps(payload).encode()
+        async def respond(status: int, message: str = "", *, raw: bytes | None = None) -> None:
+            extra = []
+            if raw is None:
+                payload = {"error": message}
+                if status == 401:
+                    # For direct callers (curl, scripts) the body is the onboarding
+                    # surface; spec-following MCP clients look at WWW-Authenticate.
+                    payload["hint"] = (
+                        "Send a key as 'Authorization: Bearer aim_...' or 'X-API-Key'. "
+                        "Free eval keys: https://aimnis.com/register — setup guides: "
+                        "https://aimnis.com/setup"
+                    )
+                    extra.append((b"www-authenticate", b'Bearer realm="aimnis"'))
+                raw = json.dumps(payload).encode()
             await send({"type": "http.response.start", "status": status,
                         "headers": [(b"content-type", b"application/json"),
-                                    (b"content-length", str(len(body)).encode())]})
-            await send({"type": "http.response.body", "body": body})
+                                    (b"content-length", str(len(raw)).encode()), *extra]})
+            await send({"type": "http.response.body", "body": raw})
 
         if self._manager is None:
             await respond(503, "mcp edge not running")
             return
 
         presented = _presented_key(scope)
-        if not presented:
-            await respond(401, "invalid or missing API key")
-            return
 
-        if _is_admin(presented):
+        if presented and _is_admin(presented):
             id_token = apikeys.current_client_id.set("admin")
             try:
                 await self._manager.handle_request(scope, receive, send)
@@ -134,11 +169,17 @@ class McpEdge:
             more = message.get("more_body", False)
         body = b"".join(chunks)
 
-        pool = await db.get_pool()
+        is_tool_call = scope.get("method") == "POST" and _wants_tool_call(body)
         client_keys = None
         client_id = None
-        if scope.get("method") == "POST" and _wants_tool_call(body):
-            res = await apikeys.reserve(pool, presented)
+        if presented is None:
+            # Key-less: the handshake succeeds (so the agent sees the tools), but
+            # a tool call answers with how to get a key instead of results.
+            if is_tool_call:
+                await respond(200, raw=_anon_call_response(body))
+                return
+        elif is_tool_call:
+            res = await apikeys.reserve(await db.get_pool(), presented)
             if not res.granted:
                 if res.reason in ("rate_minute", "rate_day"):
                     await respond(429, f"rate limit exceeded ({res.reason})")
@@ -150,8 +191,8 @@ class McpEdge:
             # via a contextvar (tasks the MCP layer spawns inherit this context).
             if res.client_id:
                 client_id = res.client_id
-                client_keys = await apikeys.load_client_keys(pool, res.client_id)
-        elif not await apikeys.verify(pool, presented):
+                client_keys = await apikeys.load_client_keys(await db.get_pool(), res.client_id)
+        elif not await apikeys.verify(await db.get_pool(), presented):
             await respond(401, "invalid or missing API key")
             return
 
