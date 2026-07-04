@@ -30,7 +30,7 @@ import time
 from fastapi import APIRouter, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from . import apikeys, db, email as email_mod, flags
+from . import apikeys, db, email as email_mod, flags, stats
 from .config import settings
 
 router = APIRouter()
@@ -220,17 +220,32 @@ _STYLE = """
   .steps { color:#8aa0bd; }
   footer { color:#5c6f88; font-size:13px; margin-top:40px; border-top:1px solid #182234; padding-top:16px; }
   nav a { margin-right:16px; }
+  .wrap.wide { max-width:920px; }
+  .hero { display:grid; grid-template-columns:1.1fr 1fr; gap:30px; align-items:center; margin:6px 0 8px; }
+  @media (max-width:720px) { .hero { grid-template-columns:1fr; } }
+  .proof { background:#111820; border:1px solid #20304a; border-radius:12px; padding:18px 20px; }
+  .proof .pill { color:#2dd4bf; font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
+  .proof .pill::before { content:"●"; margin-right:6px; }
+  .proof .q { color:#e6edf3; font-weight:600; margin:10px 0 8px; }
+  .proof .a { color:#8aa0bd; font-size:14px; margin:0 0 10px; }
+  .proof .src { font-size:13px; margin:0; }
+  .proof .ms { color:#5c6f88; font-size:12px; margin:8px 0 0; }
+  .proofline { color:#8aa0bd; font-size:14px; margin:10px 2px 0; }
+  .benefits { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; margin:0 0 14px; }
+  .benefit { background:#111820; border:1px solid #20304a; border-radius:10px; padding:14px 16px; }
+  .benefit b { display:block; margin-bottom:4px; }
+  .benefit p { color:#8aa0bd; font-size:14px; margin:0; }
 """
 
 
-def _page(title: str, body: str) -> str:
+def _page(title: str, body: str, *, wide: bool = False) -> str:
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)}</title>
 {FAVICON_LINK}
 <style>{_STYLE}</style></head>
-<body><div class="wrap">{body}
+<body><div class="wrap{' wide' if wide else ''}">{body}
 <footer><nav><a href="/">Home</a><a href="/register">Get a key</a>
 <a href="/setup">Agent setup</a><a href="/flywheel">Live flywheel</a><a href="/terms">Terms</a></nav>
 <p class="muted">Aimnis is an evaluation preview — best-effort, no SLA. Answers are AI-generated;
@@ -243,27 +258,65 @@ verify time-sensitive facts. Don't send secrets or personal data in queries.</p>
 # --------------------------------------------------------------------------- #
 @router.get("/", response_class=HTMLResponse)
 async def landing() -> HTMLResponse:
-    body = """
-  <h1>Aimnis</h1>
-  <p class="tag">Collaborative search for agents. Search once, answer everyone.</p>
+    # Live aggregate proof for the hero. Best-effort: the landing page must render
+    # even if the DB is unreachable. Aggregates only — raw pool query text is never
+    # published (a scrubber miss could leak a secret), so the Q→A sample below is a
+    # hand-picked REAL pool entry, hardcoded rather than fetched.
+    proofline = '<a href="/flywheel">Watch the pool grow live →</a>'
+    try:
+        s = await stats.gather(await db.get_pool())
+        if s.corpus_servable:
+            parts = [f"<b>{s.corpus_servable}</b> answers pooled"]
+            if s.lookups_total:
+                parts.append(f"<b>{s.hit_rate:.0%}</b> of questions answered instantly")
+            proofline = (" · ".join(parts)
+                         + ' · <a href="/flywheel">watch it live →</a>')
+    except Exception:  # noqa: BLE001 — proof numbers are decoration, never a 500
+        pass
 
-  <p>Your coding agent keeps re-searching the same things — the new library version, the same
-  error message, the same API change — and you wait and pay every time. <b>Aimnis gives your
-  agent a shared memory of the web.</b> Anything that anyone's agent has asked before comes back
-  instantly, with sources. New questions are answered live once — then they're instant for
-  everyone after, including you.</p>
+    body = f"""
+  <div class="hero">
+    <div>
+      <h1>Aimnis</h1>
+      <p class="tag">Collaborative search for agents. Search once, answer everyone.</p>
+      <p>Your coding agent keeps re-searching the same things — the new library version, the
+      same error message, the same API change — and you wait and pay every time. <b>Aimnis
+      gives your agent a shared memory of the web.</b> Anything that anyone's agent has asked
+      before comes back instantly, with sources.</p>
+      <p style="margin-top:18px">
+        <a class="btn" href="/register">Get an eval API key</a>
+        <a class="btn secondary" href="/setup">Agent setup</a>
+      </p>
+    </div>
+    <div>
+      <div class="proof">
+        <p class="pill" style="margin:0">answered from the pool</p>
+        <p class="q">pgvector: HNSW or IVFFlat for a table under 1M rows?</p>
+        <p class="a">Use HNSW as the default — it works on empty tables, handles writes
+        without rebuilds, and gives high recall with modest tuning
+        (<code>hnsw.ef_search ≈ 80–120</code>)…</p>
+        <p class="src">[1] github.com/pgvector &nbsp;·&nbsp; [2] supabase.com/blog</p>
+        <p class="ms">a real pooled answer — searched once, instant for every agent since</p>
+      </div>
+      <p class="proofline">{proofline}</p>
+    </div>
+  </div>
 
   <h2>What you get</h2>
-  <ul>
-    <li><b>Faster sessions</b> — known questions come back in milliseconds instead of a full
-        web search, so your agent spends its time coding, not searching.</li>
-    <li><b>Lower cost</b> — the expensive part (live search) runs only on genuinely new
-        questions. Nobody pays for the same answer twice.</li>
-    <li><b>Answers you can check</b> — every answer shows its sources and its age, so you and
-        your agent can tell where it came from and how fresh it is.</li>
-    <li><b>Better every day</b> — every question anyone asks becomes an instant answer for you.
-        You benefit from every other user, and they benefit from you.</li>
-  </ul>
+  <div class="benefits">
+    <div class="benefit"><b>⚡ Faster sessions</b>
+      <p>Known questions come back in milliseconds, not a full web search. Your agent spends
+      its time coding.</p></div>
+    <div class="benefit"><b>💰 Lower cost</b>
+      <p>Live search runs only on genuinely new questions. Nobody pays for the same answer
+      twice.</p></div>
+    <div class="benefit"><b>🔍 Answers you can check</b>
+      <p>Every answer shows its sources and its age — you can tell where it came from and how
+      fresh it is.</p></div>
+    <div class="benefit"><b>📈 Better every day</b>
+      <p>Every question anyone asks becomes an instant answer for you — and yours help
+      everyone else.</p></div>
+  </div>
 
   <div class="card">
     <p style="margin:0 0 14px"><b>Try it free.</b> Eval key by email, no card. Your agent
@@ -286,7 +339,7 @@ async def landing() -> HTMLResponse:
   <p class="muted">By requesting a key you agree to the <a href="/terms">Terms of Use</a>.
   Operators reserve the right to revoke any key at any time.</p>
 """
-    return HTMLResponse(_page("Aimnis · Collaborative Search for Agents", body))
+    return HTMLResponse(_page("Aimnis · Collaborative Search for Agents", body, wide=True))
 
 
 # --------------------------------------------------------------------------- #

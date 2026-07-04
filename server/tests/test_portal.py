@@ -307,3 +307,32 @@ async def test_admin_toggle_requires_key(clean, monkeypatch):
                           headers={"X-Admin-Key": "adm1n"})
         assert ok.status_code == 200 and ok.json() == {"registration_open": False}
     assert await flags.registration_open(clean) is False
+
+
+async def test_landing_live_proof_numbers(clean, monkeypatch):
+    # With a servable pool + lookups, the hero shows live aggregate numbers…
+    await clean.execute(
+        "INSERT INTO pool_entry (query_text, query_norm, query_hash, sources, model, "
+        "status, opt_in) VALUES ('q','q','lh1','[]'::jsonb,'searxng-live','active',true)"
+    )
+    await clean.execute(
+        "INSERT INTO lookup_event (query_hash, outcome) VALUES ('lh1','miss'),('lh1','hit_exact')"
+    )
+    async with _client(clean, monkeypatch) as c:
+        home = (await c.get("/")).text
+    assert "answers pooled" in home
+    assert "answered instantly" in home
+    # …and never the raw pool query text (aggregate-only invariant).
+    assert ">q<" not in home
+
+
+async def test_landing_renders_without_db(clean, monkeypatch):
+    async def broken_pool():
+        raise RuntimeError("db down")
+    monkeypatch.setattr(db, "get_pool", broken_pool)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url="http://t"
+    ) as c:
+        home = await c.get("/")
+    assert home.status_code == 200
+    assert "Collaborative search" in home.text
