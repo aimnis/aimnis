@@ -368,14 +368,14 @@ async def landing() -> HTMLResponse:
     # even if the DB is unreachable. Aggregates only — raw pool query text is never
     # published (a scrubber miss could leak a secret), so the Q→A sample below is a
     # hand-picked REAL pool entry, hardcoded rather than fetched.
+    # Deliberately NOT reporting corpus size here — an early, small pool count reads
+    # as discouraging; the hit rate is the meaningful signal, and /flywheel carries
+    # the full picture for anyone who wants it.
     proofline = '<a href="/flywheel">Watch the pool grow live →</a>'
     try:
         s = await stats.gather(await db.get_pool())
-        if s.corpus_servable:
-            parts = [f"<b>{s.corpus_servable}</b> answers pooled"]
-            if s.lookups_total:
-                parts.append(f"<b>{s.hit_rate:.0%}</b> of questions answered instantly")
-            proofline = (" · ".join(parts)
+        if s.corpus_servable and s.lookups_total:
+            proofline = (f"<b>{s.hit_rate:.0%}</b> of questions answered instantly"
                          + ' · <a href="/flywheel">watch it live →</a>')
     except Exception:  # noqa: BLE001 — proof numbers are decoration, never a 500
         pass

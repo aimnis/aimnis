@@ -323,8 +323,9 @@ async def test_landing_live_proof_numbers(clean, monkeypatch):
     )
     async with _client(clean, monkeypatch) as c:
         home = (await c.get("/")).text
-    assert "answers pooled" in home
     assert "answered instantly" in home
+    # …but never the (early, small) corpus count — it reads as discouraging.
+    assert "answers pooled" not in home
     # …and never the raw pool query text (aggregate-only invariant).
     assert ">q<" not in home
 
