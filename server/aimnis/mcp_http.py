@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs
 
@@ -42,6 +43,8 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from . import apikeys, db
 from .config import settings
 from .mcp_server import mcp
+
+log = logging.getLogger("aimnis.mcp")
 
 
 def _presented_key(scope) -> str | None:
@@ -136,6 +139,18 @@ class McpEdge:
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
             return
+
+        # Who's actually hitting /mcp: the access log only shows Railway's proxy IP,
+        # so a spider and a real MCP client look identical there. The User-Agent (and
+        # the real client via x-forwarded-for's first hop) is what tells them apart —
+        # registry validators, agent runtimes, and crawlers each announce themselves.
+        # No secrets here: keys travel in Authorization / X-API-Key / ?api_key, none
+        # of which is logged.
+        _h = {k.decode("latin-1").lower(): v.decode("latin-1")
+              for k, v in scope.get("headers", [])}
+        log.info("mcp %s ua=%r ip=%s",
+                 scope.get("method"), _h.get("user-agent", "-"),
+                 _h.get("x-forwarded-for", "-").split(",")[0].strip() or "-")
 
         async def respond(status: int, message: str = "", *, raw: bytes | None = None) -> None:
             extra = []
