@@ -764,22 +764,27 @@ async def mcp_server_card() -> JSONResponse:
     (e.g. Smithery) that can't get past /mcp's bearer-key auth wall — we don't
     implement OAuth, so their authenticated scan can't run. Tool names/schemas
     must mirror mcp_server.py."""
+    # Smithery session-config: prompt the user for their key and forward it
+    # as the X-API-Key header (accepted by our /mcp edge alongside Bearer).
+    api_key_field: dict = {
+        "type": "string",
+        "title": "Aimnis API key",
+        "description": "Free eval key (aim_…) from https://aimnis.com/register",
+        "x-from": {"header": "x-api-key"},
+    }
+    if settings.demo_api_key:
+        # Deliberately-public try-out key (its own DB client, standard tight
+        # caps, revocable by prefix). Pre-fills the directory config form so
+        # visitors can try the server without registering first.
+        api_key_field["default"] = settings.demo_api_key
+        api_key_field["description"] += " — or keep the pre-filled shared demo key"
     return JSONResponse({
         "serverInfo": {"name": "Aimnis", "version": "0.1.0"},
         "authentication": {"required": True, "schemes": ["bearer"]},
-        # Smithery session-config: prompt the user for their key and forward it
-        # as the X-API-Key header (accepted by our /mcp edge alongside Bearer).
         "configSchema": {
             "type": "object",
             "required": ["apiKey"],
-            "properties": {
-                "apiKey": {
-                    "type": "string",
-                    "title": "Aimnis API key",
-                    "description": "Free eval key (aim_…) from https://aimnis.com/register",
-                    "x-from": {"header": "x-api-key"},
-                },
-            },
+            "properties": {"apiKey": api_key_field},
         },
         "tools": [
             {

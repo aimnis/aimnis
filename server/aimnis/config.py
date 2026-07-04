@@ -163,6 +163,11 @@ class Settings(BaseSettings):
     # Anti-abuse: max portal form submissions (/register, /waitlist) per client IP
     # per hour. In-process counter — sufficient for a single-instance deploy.
     portal_ip_hourly: int = 5
+    # Optional shared try-out key, pre-filled in the public MCP server card's config
+    # form so directory visitors (e.g. Smithery playground) can try the server without
+    # registering. DELIBERATELY PUBLIC — must be a dedicated metered DB client key
+    # (standard caps bound the abuse; revoke by prefix to rotate). Never the admin key.
+    demo_api_key: str | None = None
 
     # Citation routing — cited source links can be routed through a signed
     # /r/<token> redirect that logs a click (aggregate relevance signal: which

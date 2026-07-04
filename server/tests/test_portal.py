@@ -245,6 +245,17 @@ async def test_mcp_server_card(clean, monkeypatch):
     card = r.json()
     assert card["authentication"]["required"] is True
     assert {t["name"] for t in card["tools"]} == {"search", "stats"}
+    # No demo key configured → no default leaks into the public card.
+    assert "default" not in card["configSchema"]["properties"]["apiKey"]
+
+
+async def test_mcp_server_card_demo_key_prefill(clean, monkeypatch):
+    monkeypatch.setattr(settings, "demo_api_key", "aim_demo123")
+    async with _client(clean, monkeypatch) as c:
+        r = await c.get("/.well-known/mcp/server-card.json")
+    field = r.json()["configSchema"]["properties"]["apiKey"]
+    assert field["default"] == "aim_demo123"
+    assert "demo" in field["description"]
 
 
 async def test_admin_clients_listing(clean, monkeypatch):
