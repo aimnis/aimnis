@@ -7,6 +7,7 @@ deps — same constraints as the flywheel dashboard).
 Routes:
     GET  /                     landing — what Aimnis is + why
     GET  /setup                per-agent setup instructions (hosted MCP endpoint + REST)
+    GET  /llms.txt             plain-text summary for LLM/agent crawlers
     GET  /terms                terms of use
     GET  /register             registration form (or "at capacity" + waitlist if paused)
     POST /register             issue a key (open) → email it (email-only in prod); else waitlist
@@ -136,6 +137,33 @@ async def robots() -> Response:
         f"Sitemap: {base}/sitemap.xml\n"
     )
     return Response(body, media_type="text/plain",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+@router.get("/llms.txt")
+async def llms_txt() -> Response:
+    """Plain-text site summary for LLM/agent crawlers (the llms.txt convention) —
+    an agent-directory crawler probed for this on 2026-07-04, so something reads it."""
+    base = settings.portal_base_url.rstrip("/")
+    body = f"""# Aimnis
+
+> Collaborative, cache-first web search for AI agents. Ask over MCP; semantically
+> similar questions answered before (by anyone) return a distilled, source-cited
+> answer instantly. New questions are searched live, distilled, cited, and pooled
+> for the next agent. Search once, answer everyone.
+
+MCP endpoint: {base}/mcp (streamable HTTP; Authorization: Bearer aim_YOUR_KEY,
+or X-API-Key). Free eval key by email: {base}/register
+Server card: {base}/.well-known/mcp/server-card.json
+
+## Docs
+
+- [Agent setup]({base}/setup): config snippets for OpenCode, OpenClaw, Hermes, Pi, Claude Code, REST
+- [Live flywheel]({base}/flywheel): public dashboard — cache hit rate vs corpus size
+- [Terms]({base}/terms): AI-generated answers, provenance, free personal-data removal
+- [Source](https://github.com/aimnis/aimnis): AGPLv3 server, Apache-2.0 clients
+"""
+    return Response(body, media_type="text/plain; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=86400"})
 
 

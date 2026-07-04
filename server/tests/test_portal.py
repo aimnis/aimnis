@@ -219,6 +219,16 @@ async def test_favicon_served_and_linked(clean, monkeypatch):
     assert 'rel="icon"' in home.text and 'rel="icon"' in fly.text
 
 
+async def test_llms_txt(clean, monkeypatch):
+    async with _client(clean, monkeypatch) as c:
+        r = await c.get("/llms.txt")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
+    base = settings.portal_base_url.rstrip("/")
+    assert r.text.startswith("# Aimnis")
+    for needle in (f"{base}/mcp", f"{base}/register", f"{base}/setup", "server-card.json"):
+        assert needle in r.text
+
+
 async def test_robots_and_sitemap(clean, monkeypatch):
     async with _client(clean, monkeypatch) as c:
         robots = await c.get("/robots.txt")
