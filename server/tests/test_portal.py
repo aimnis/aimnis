@@ -357,6 +357,20 @@ async def test_homepage_link_header_and_api_catalog(clean, monkeypatch):
     assert any(a.endswith("/v1/search") for a in anchors)
 
 
+async def test_auth_md(clean, monkeypatch):
+    # Self-contained auth.md: H1 required by the convention, plus the audience,
+    # registration path, credential use, and an explicit "no OAuth" so
+    # OAuth-capable clients don't attempt a flow that dead-ends.
+    async with _client(clean, monkeypatch) as c:
+        r = await c.get("/auth.md")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/markdown")
+    assert r.text.startswith("# auth.md")
+    assert "/register" in r.text and "Bearer aim_" in r.text
+    assert "no OAuth" in r.text
+    assert f"{settings.client_default_rpm} requests/min" in r.text
+
+
 async def test_markdown_negotiation(clean, monkeypatch):
     # Agents asking for `Accept: text/markdown` get a markdown rendering of any
     # HTML page (Cloudflare Markdown-for-Agents convention); browsers keep HTML.

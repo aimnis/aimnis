@@ -8,6 +8,7 @@ Routes:
     GET  /                     landing — what Aimnis is + why
     GET  /setup                per-agent setup instructions (hosted MCP endpoint + REST)
     GET  /llms.txt             plain-text summary for LLM/agent crawlers
+    GET  /auth.md              agent-readable auth/registration instructions
     GET  /.well-known/api-catalog  RFC 9727 linkset of machine-usable endpoints
                                (advertised via an RFC 8288 Link header on /)
     GET  /terms                terms of use
@@ -165,11 +166,60 @@ Server card: {base}/.well-known/mcp/server-card.json
 ## Docs
 
 - [Agent setup]({base}/setup): config snippets for OpenCode, OpenClaw, Hermes, Pi, Claude Code, REST
+- [Auth]({base}/auth.md): how to get and send an API key (bearer, no OAuth)
 - [Live flywheel]({base}/flywheel): public dashboard — cache hit rate vs corpus size
 - [Terms]({base}/terms): AI-generated answers, provenance, free personal-data removal
 - [Source](https://github.com/aimnis/aimnis): AGPLv3 server, Apache-2.0 clients
 """
     return Response(body, media_type="text/plain; charset=utf-8",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+@router.get("/auth.md")
+async def auth_md() -> Response:
+    """Agent-readable auth instructions (the auth.md convention). Self-contained
+    and honest: bearer keys only — no OAuth server exists, and saying so saves
+    OAuth-capable clients from attempting a flow that dead-ends."""
+    base = settings.portal_base_url.rstrip("/")
+    body = f"""# auth.md
+
+How agents authenticate to Aimnis ({base}) — collaborative, cache-first web
+search over MCP and REST.
+
+## Audience
+
+AI agents calling the MCP endpoint at {base}/mcp (streamable HTTP) or the REST
+gateway at {base}/v1/search and {base}/v1/stats.
+
+## Credential
+
+- Static bearer API key, prefix `aim_`. There is **no OAuth** authorization
+  server — do not attempt an OAuth flow.
+- Send the key on every request as `Authorization: Bearer aim_...` or
+  `X-API-Key: aim_...`.
+
+## Registration
+
+- Free eval keys are issued by email at [{base}/register]({base}/register)
+  (HTML form). An agent cannot complete this alone: ask your user to submit
+  their email address; the key arrives in their inbox.
+- Optional BYOK: attach your own upstream (OpenRouter / search) keys at
+  registration and your cache misses run on your own quota with higher limits.
+
+## Without a key
+
+- MCP: the handshake and `tools/list` work; `tools/call` returns registration
+  instructions instead of search results.
+- REST: all {base}/v1 endpoints return 401 with a hint body.
+
+## Limits and revocation
+
+- Default per-key limits: {settings.client_default_rpm} requests/min,
+  {settings.client_default_rpd}/day (BYOK: {settings.byok_rpm}/min,
+  {settings.byok_rpd}/day). Exceeding them returns 429.
+- Keys may be revoked for abuse. Setup guides per agent: [{base}/setup]({base}/setup).
+"""
+    return Response(body, media_type="text/markdown; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=86400"})
 
 
