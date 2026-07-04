@@ -697,6 +697,20 @@ async def mcp_server_card() -> JSONResponse:
     return JSONResponse({
         "serverInfo": {"name": "Aimnis", "version": "0.1.0"},
         "authentication": {"required": True, "schemes": ["bearer"]},
+        # Smithery session-config: prompt the user for their key and forward it
+        # as the X-API-Key header (accepted by our /mcp edge alongside Bearer).
+        "configSchema": {
+            "type": "object",
+            "required": ["apiKey"],
+            "properties": {
+                "apiKey": {
+                    "type": "string",
+                    "title": "Aimnis API key",
+                    "description": "Free eval key (aim_…) from https://aimnis.com/register",
+                    "x-from": {"header": "x-api-key"},
+                },
+            },
+        },
         "tools": [
             {
                 "name": "search",
