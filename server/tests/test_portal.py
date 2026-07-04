@@ -235,6 +235,9 @@ async def test_robots_and_sitemap(clean, monkeypatch):
         sitemap = await c.get("/sitemap.xml")
     assert robots.status_code == 200 and robots.headers["content-type"].startswith("text/plain")
     assert "Disallow: /r/" in robots.text and "Sitemap:" in robots.text
+    # Content Signals: grounding on our pages is the product, indexing wanted,
+    # but the CC-BY-NC / paid-licensing corpus is not free training data.
+    assert "Content-Signal: search=yes, ai-input=yes, ai-train=no" in robots.text
     assert sitemap.status_code == 200
     for path in ("/register", "/setup", "/flywheel", "/terms"):
         assert f"{settings.portal_base_url.rstrip('/')}{path}</loc>" in sitemap.text

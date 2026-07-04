@@ -131,8 +131,12 @@ async def favicon() -> Response:
 async def robots() -> Response:
     base = settings.portal_base_url.rstrip("/")
     # /r/ redirects feed the aggregate click log — keep crawlers out of it.
+    # Content-Signal (contentsignals.org): agents reading/grounding on our pages
+    # IS the product (ai-input) and we want indexing (search) — but the corpus is
+    # CC-BY-NC with paid commercial licensing planned, so no free training use.
     body = (
         "User-agent: *\n"
+        "Content-Signal: search=yes, ai-input=yes, ai-train=no\n"
         "Disallow: /r/\n"
         "Disallow: /admin/\n"
         "Allow: /\n"
