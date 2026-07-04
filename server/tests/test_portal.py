@@ -219,6 +219,17 @@ async def test_favicon_served_and_linked(clean, monkeypatch):
     assert 'rel="icon"' in home.text and 'rel="icon"' in fly.text
 
 
+async def test_robots_and_sitemap(clean, monkeypatch):
+    async with _client(clean, monkeypatch) as c:
+        robots = await c.get("/robots.txt")
+        sitemap = await c.get("/sitemap.xml")
+    assert robots.status_code == 200 and robots.headers["content-type"].startswith("text/plain")
+    assert "Disallow: /r/" in robots.text and "Sitemap:" in robots.text
+    assert sitemap.status_code == 200
+    for path in ("/register", "/setup", "/flywheel", "/terms"):
+        assert f"{settings.portal_base_url.rstrip('/')}{path}</loc>" in sitemap.text
+
+
 async def test_glama_wellknown(clean, monkeypatch):
     monkeypatch.setattr(settings, "email_from", "Aimnis <support@aimnis.com>")
     async with _client(clean, monkeypatch) as c:
@@ -234,6 +245,27 @@ async def test_mcp_server_card(clean, monkeypatch):
     card = r.json()
     assert card["authentication"]["required"] is True
     assert {t["name"] for t in card["tools"]} == {"search", "stats"}
+
+
+async def test_admin_clients_listing(clean, monkeypatch):
+    monkeypatch.setattr(settings, "admin_api_key", "adm1n")
+    issued = await apikeys.issue(clean, email="listed@example.com", label="cli")
+    await clean.execute(
+        "INSERT INTO api_request (client_id) SELECT id FROM api_client "
+        "WHERE lower(email)='listed@example.com'"
+    )
+    async with _client(clean, monkeypatch) as c:
+        # Guarded like the registration toggle: no/wrong key rejected.
+        assert (await c.get("/admin/clients")).status_code == 401
+        r = await c.get("/admin/clients", headers={"X-Admin-Key": "adm1n"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 1
+    row = body["clients"][0]
+    assert row["email"] == "listed@example.com" and row["status"] == "active"
+    assert issued.key.startswith(row["key_prefix"])
+    assert issued.key not in r.text  # full key is unrecoverable, only the prefix
+    assert row["requests_24h"] == 1 and row["requests_total"] == 1
 
 
 async def test_admin_toggle_requires_key(clean, monkeypatch):

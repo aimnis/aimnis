@@ -12,6 +12,7 @@ Routes:
     POST /register             issue a key (open) → email it (email-only in prod); else waitlist
     POST /waitlist             capture an email for capacity notifications
     POST /admin/registration   operator pause/resume toggle (X-Admin-Key)
+    GET  /admin/clients        registered clients + usage counts (X-Admin-Key)
 
 Issuance is INSTANT when `registration_open`. Each issued key is metered (per-key
 rate + daily caps, see apikeys/gateway) and revocable at any time. Operators reserve
@@ -121,6 +122,39 @@ async def favicon() -> Response:
         media_type="image/svg+xml",
         headers={"Cache-Control": "public, max-age=86400"},
     )
+
+
+@router.get("/robots.txt")
+async def robots() -> Response:
+    base = settings.portal_base_url.rstrip("/")
+    # /r/ redirects feed the aggregate click log — keep crawlers out of it.
+    body = (
+        "User-agent: *\n"
+        "Disallow: /r/\n"
+        "Disallow: /admin/\n"
+        "Allow: /\n"
+        f"Sitemap: {base}/sitemap.xml\n"
+    )
+    return Response(body, media_type="text/plain",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+@router.get("/sitemap.xml")
+async def sitemap() -> Response:
+    base = settings.portal_base_url.rstrip("/")
+    urls = "".join(
+        f"<url><loc>{base}{path}</loc></url>"
+        for path in ("/", "/register", "/setup", "/flywheel", "/terms")
+    )
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        f"{urls}</urlset>"
+    )
+    return Response(body, media_type="application/xml",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
 _STYLE = """
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -778,8 +812,40 @@ async def mcp_server_card() -> JSONResponse:
 
 
 # --------------------------------------------------------------------------- #
-# Admin: pause/resume registration
+# Admin: pause/resume registration, list registered clients
 # --------------------------------------------------------------------------- #
+def _require_admin(x_admin_key: str | None) -> None:
+    if not settings.admin_api_key:
+        raise HTTPException(status_code=404, detail="not found")
+    if not x_admin_key or not hmac.compare_digest(x_admin_key, settings.admin_api_key):
+        raise HTTPException(status_code=401, detail="invalid admin key")
+
+
+@router.get("/admin/clients")
+async def admin_list_clients(
+    active: bool = False,
+    x_admin_key: str | None = Header(default=None),
+) -> JSONResponse:
+    """Registered clients (email, key prefix, status, limits, usage). Full keys are
+    never stored, so they can never be listed — the prefix is the operator handle."""
+    _require_admin(x_admin_key)
+    pool = await db.get_pool()
+    clients = await apikeys.list_clients(pool, active_only=active)
+    usage = {
+        str(r["client_id"]): (r["today"], r["total"])
+        for r in await pool.fetch(
+            "SELECT client_id, count(*) FILTER (WHERE created_at >= now() - interval '24 hours')"
+            " AS today, count(*) AS total FROM api_request GROUP BY client_id"
+        )
+    }
+    for c in clients:
+        c["id"] = str(c["id"])
+        c["created_at"] = c["created_at"].isoformat()
+        c["revoked_at"] = c["revoked_at"].isoformat() if c["revoked_at"] else None
+        c["requests_24h"], c["requests_total"] = usage.get(c["id"], (0, 0))
+    return JSONResponse({"count": len(clients), "clients": clients})
+
+
 @router.post("/admin/registration")
 async def admin_set_registration(
     open: bool = Form(...),
@@ -787,10 +853,7 @@ async def admin_set_registration(
 ) -> JSONResponse:
     """Flip the registration_open flag live (no redeploy). Requires AIMNIS_ADMIN_API_KEY;
     if that's unset the endpoint is disabled (fail-closed 404)."""
-    if not settings.admin_api_key:
-        raise HTTPException(status_code=404, detail="not found")
-    if not x_admin_key or not hmac.compare_digest(x_admin_key, settings.admin_api_key):
-        raise HTTPException(status_code=401, detail="invalid admin key")
+    _require_admin(x_admin_key)
     pool = await db.get_pool()
     await flags.set_flag(pool, flags.REGISTRATION_OPEN, open)
     return JSONResponse({"registration_open": open})

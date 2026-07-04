@@ -43,7 +43,7 @@ at it. Either way you land on a Postgres with `vector` available.
 | `AIMNIS_BRAVE_API_KEY` | *your key* | Live-fallback search. |
 | `AIMNIS_OPENROUTER_API_KEY` | *your key* | Distillation. Omit → raw cited snippets, zero upstream spend. |
 | `AIMNIS_GATEWAY_API_KEYS` | `key1,key2` | **Admin/bootstrap keys** (unlimited, unmetered) — comma-separated. This is *your* operator key. Self-serve eval keys are issued by the portal into the DB (metered + revocable), so you no longer need to list every client here. The gateway is fail-closed: no request is served without a valid admin key **or** a valid DB client key. |
-| `AIMNIS_ADMIN_API_KEY` | *your key* | Guards the operator endpoint `POST /admin/registration` (pause/resume eval intake). Unset ⇒ that endpoint is disabled (404); you can still flip the flag directly in the DB. |
+| `AIMNIS_ADMIN_API_KEY` | *your key* | Guards the operator endpoints `POST /admin/registration` (pause/resume eval intake) and `GET /admin/clients` (list registered clients + usage). Unset ⇒ both are disabled (404); you can still query the DB directly. |
 | `AIMNIS_RESEND_API_KEY` | *your key* | Transactional email (issued-key delivery + waitlist). When set, issued keys are delivered **only by email** (a working inbox is the anti-farming gate; a failed send revokes the key). Omit → email is a logged no-op and the key is shown once on-screen (dev / self-host). See **Email deliverability** below. |
 | `AIMNIS_PORTAL_IP_HOURLY` | `5` | Max portal form submissions (`/register` + `/waitlist`) per client IP per hour. Optional (default shown). |
 | `AIMNIS_EMAIL_FROM` | `Aimnis <support@aimnis.com>` | From address; the domain must be verified in Resend. Use a mailbox you actually monitor — registrants reply here. |
@@ -104,6 +104,13 @@ rate-limited per the `AIMNIS_CLIENT_DEFAULT_RPM/RPD` caps.
     -H "X-Admin-Key: $AIMNIS_ADMIN_API_KEY" -d 'open=false'   # resume: open=true
   ```
   (Or `UPDATE service_flag SET enabled=false WHERE name='registration_open';`.)
+- **List registered clients** (email, key prefix, status, limits, 24h/total usage):
+  ```bash
+  curl -s https://aimnis.com/admin/clients -H "X-Admin-Key: $AIMNIS_ADMIN_API_KEY"
+  # active only: /admin/clients?active=true
+  ```
+  Full keys are never stored (sha256 only) and can never be listed — the prefix is
+  the operator handle for revocation.
 - **Revoke a key**: no redeploy —
   `UPDATE api_client SET status='revoked', revoked_at=now() WHERE key_prefix='aim_XXXX';`
   (or by `email`). The operator's env `AIMNIS_GATEWAY_API_KEYS` are unaffected.
