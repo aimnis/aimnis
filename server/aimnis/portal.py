@@ -200,11 +200,18 @@ gateway at {base}/v1/search and {base}/v1/stats.
 
 ## Registration
 
-- Free eval keys are issued by email at [{base}/register]({base}/register)
-  (HTML form). An agent cannot complete this alone: ask your user to submit
-  their email address; the key arrives in their inbox.
-- Optional BYOK: attach your own upstream (OpenRouter / search) keys at
-  registration and your cache misses run on your own quota with higher limits.
+Agent registration uses the **verified-email** method (no programmatic
+registration endpoint — a human confirms via their inbox):
+
+- `register_uri`: {base}/register
+- `identity_types_supported`: `verified-email`
+- `credential_types_supported`: `api_key` (bearer, prefix `aim_`)
+
+Flow: hand off to your user — they submit their email address at the
+`register_uri` (HTML form) and the API key arrives in their inbox. An agent
+cannot complete registration alone. Optional BYOK: attach your own upstream
+(OpenRouter / search) keys at registration and your cache misses run on your
+own quota with higher limits.
 
 ## Without a key
 
