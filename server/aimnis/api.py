@@ -13,6 +13,8 @@ queries, plus a JSON metrics endpoint (`/api/stats`) for build-in-public access.
 from __future__ import annotations
 
 import html
+import logging
+import re
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 
@@ -39,6 +41,26 @@ async def lifespan(app: FastAPI):
         yield
     await db.close_pool()
 
+
+# Some clients put the API key in the URL (`?api_key=...` — the only option when
+# a client can't send headers), and uvicorn's access log prints request lines
+# verbatim — which would land keys in the host's log stream in plaintext. Scrub
+# them at the logging layer, whatever the accepted-auth story is: clients send
+# these whether or not we honor them. Attached at import time, which runs AFTER
+# uvicorn configures logging, so the filter survives its dictConfig.
+class _RedactKeysInAccessLog(logging.Filter):
+    _pat = re.compile(r"(api_?key=)[^&\s\"']+", re.IGNORECASE)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                self._pat.sub(r"\1[redacted]", a) if isinstance(a, str) else a
+                for a in record.args
+            )
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_RedactKeysInAccessLog())
 
 app = FastAPI(title="Aimnis Flywheel", lifespan=lifespan)
 

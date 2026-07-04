@@ -35,6 +35,7 @@ from __future__ import annotations
 import hmac
 import json
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs
 
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
@@ -50,6 +51,18 @@ def _presented_key(scope) -> str | None:
     auth = headers.get("authorization", "")
     if not key and auth.lower().startswith("bearer "):
         key = auth[7:].strip()
+    if not key:
+        # URL fallback for clients that can only be configured with a bare URL
+        # (Smithery-style `?api_key=...`). Only OUR key format is read: a
+        # foreign-format value (e.g. a gateway's own key leaking through a
+        # proxy) is ignored, so that caller stays on the keyless onboarding
+        # path instead of being hard-401'd for a key they never meant to send.
+        # Keys are scrubbed from access logs — see the redaction filter in api.py.
+        qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+        for name in ("api_key", "apiKey"):
+            for candidate in qs.get(name, []):
+                if candidate.startswith("aim_"):
+                    return candidate
     return key or None
 
 

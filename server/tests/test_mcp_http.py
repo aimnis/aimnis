@@ -80,6 +80,55 @@ async def test_mcp_keyless_tool_call_gets_onboarding_message(clean, monkeypatch)
     assert await clean.fetchval("SELECT count(*) FROM lookup_event") == 0
 
 
+async def test_mcp_url_api_key_works_and_is_metered(clean, monkeypatch):
+    # Some MCP clients can only be configured with a bare URL — `?api_key=aim_...`
+    # must authenticate exactly like the header (and headers win when both exist).
+    monkeypatch.setattr(settings, "gateway_api_keys", [])
+    issued = await apikeys.issue(clean, email="urlkey@example.com")
+    async with _client(clean, monkeypatch) as c:
+        r = await c.post(f"/mcp?api_key={issued.key}", headers=_MCP_HEADERS,
+                         json=_tools_call("x"))
+    assert r.status_code == 200
+    assert "hit rate" in r.json()["result"]["content"][0]["text"].lower()
+    assert await clean.fetchval("SELECT count(*) FROM api_request") == 1
+
+
+async def test_mcp_foreign_url_key_stays_on_onboarding_path(clean, monkeypatch):
+    # A non-aim_ query value (e.g. a gateway's own key leaking through a proxy)
+    # is ignored — the caller gets the keyless onboarding message, not a 401 for
+    # a key they never meant to present to US.
+    monkeypatch.setattr(settings, "gateway_api_keys", [])
+    async with _client(clean, monkeypatch) as c:
+        r = await c.post("/mcp?api_key=8a58cfe0-daf2-4dca-8b38-6266ae7bdead",
+                         headers=_MCP_HEADERS, json=_tools_call("x"))
+    assert r.status_code == 200
+    assert r.json()["result"]["isError"] is True
+    assert "aimnis.com/register" in r.json()["result"]["content"][0]["text"]
+
+
+async def test_mcp_header_key_wins_over_url_key(clean, monkeypatch):
+    # A presented header is authoritative: a bad header 401s even if the URL
+    # carries a valid key (never silently fall back past explicit credentials).
+    monkeypatch.setattr(settings, "gateway_api_keys", [])
+    issued = await apikeys.issue(clean, email="urlkey2@example.com")
+    async with _client(clean, monkeypatch) as c:
+        r = await c.post(f"/mcp?api_key={issued.key}",
+                         headers={**_MCP_HEADERS, "X-API-Key": "nope"},
+                         json=_tools_call("x"))
+    assert r.status_code == 401
+
+
+def test_access_log_redacts_api_keys():
+    import logging
+    from aimnis.api import _RedactKeysInAccessLog
+    rec = logging.LogRecord("uvicorn.access", logging.INFO, "", 0,
+                            '%s - "%s %s HTTP/%s" %d', None, None)
+    rec.args = ("1.2.3.4:1", "POST", "/mcp?api_key=aim_SECRET&x=1", "1.1", 200)
+    assert _RedactKeysInAccessLog().filter(rec) is True
+    assert "aim_SECRET" not in rec.getMessage()
+    assert "api_key=[redacted]" in rec.getMessage()
+
+
 async def test_mcp_presented_bad_key_still_401(clean, monkeypatch):
     # Key-less is onboarding; a PRESENTED but invalid key is refused outright —
     # with the self-serve hint in the body and WWW-Authenticate for MCP clients.

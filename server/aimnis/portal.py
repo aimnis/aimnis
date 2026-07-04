@@ -197,6 +197,9 @@ gateway at {base}/v1/search and {base}/v1/stats.
   server — do not attempt an OAuth flow.
 - Send the key on every request as `Authorization: Bearer aim_...` or
   `X-API-Key: aim_...`.
+- MCP clients that can only be configured with a bare URL may put the key in
+  the URL instead: `{base}/mcp?api_key=aim_...` (headers take precedence;
+  keys are redacted from access logs). Prefer headers when available.
 
 ## Registration
 
