@@ -8,9 +8,11 @@ a shared, always-current knowledge pool — so every search makes the pool smart
 cheaper for everyone. Like RAG, but over a communal live-web pool, not your stale
 private docs.
 
-> **Status: pre-release, building in public.** The core is working and dogfooded;
-> we are proving one thing before launch — that the cache hit rate compounds as the
-> pool grows (the [flywheel](#the-flywheel)). Follow along.
+> **Status: public preview.** The hosted service is live — get a free eval key at
+> **[aimnis.com](https://aimnis.com)** and point your agent at it in one minute
+> ([per-agent setup](https://aimnis.com/setup)). We're proving one thing in public —
+> that the cache hit rate compounds as the pool grows (the [flywheel](#the-flywheel),
+> [live dashboard](https://aimnis.com/flywheel)). Follow along.
 
 ## Why
 
@@ -85,17 +87,22 @@ aimnis-dashboard      # → http://127.0.0.1:8080   (hit-rate curve, corpus size
 ## Use it with your coding agent
 
 Aimnis speaks [MCP](https://modelcontextprotocol.io), so any MCP-capable agent can
-use it as its web-search tool.
+use it as its web-search tool. The hosted endpoint means **nothing to install**:
 
-> **Install:** not on PyPI yet — run it from source via the editable install in
-> [Quickstart](#quickstart-dev) below, and point your agent at that checkout's
-> `python`. A packaged one-command install lands once the flywheel is proven.
+1. Get a free eval key at **[aimnis.com/register](https://aimnis.com/register)**
+   (delivered by email; metered, revocable, [terms](https://aimnis.com/terms)).
+2. Add the remote MCP server to your agent:
+
+```
+URL:     https://aimnis.com/mcp          (MCP, streamable HTTP)
+Header:  Authorization: Bearer aim_YOUR_KEY
+```
 
 **Claude Code**
 
 ```bash
-claude mcp add --transport stdio aimnis-search -- \
-    /path/to/server/.venv/bin/python -m aimnis.mcp_server
+claude mcp add --transport http aimnis https://aimnis.com/mcp \
+    --header "Authorization: Bearer aim_YOUR_KEY"
 ```
 
 Then, to make the model prefer Aimnis over the built-in tool, deny `WebSearch` in
@@ -105,8 +112,13 @@ Then, to make the model prefer Aimnis over the built-in tool, deny `WebSearch` i
 { "permissions": { "deny": ["WebSearch"] } }
 ```
 
-**OpenCode** (and other MCP clients) — see [`docs/mcp.md`](docs/mcp.md) for the
-config-file snippet and the `search` / `stats` tool reference.
+**OpenCode, OpenClaw, Hermes, Pi, REST** — copy-paste snippets at
+[aimnis.com/setup](https://aimnis.com/setup) and in [`docs/mcp.md`](docs/mcp.md),
+plus the `search` / `stats` tool reference. Bring your own OpenRouter/search keys
+at registration and your cache misses run on your quota — with much higher limits.
+
+Self-hosting instead? The same MCP server runs locally over stdio against your own
+pool — see [Quickstart](#quickstart-dev) and [`docs/mcp.md`](docs/mcp.md).
 
 ## Quickstart (dev)
 
