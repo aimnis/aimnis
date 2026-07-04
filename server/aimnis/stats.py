@@ -49,6 +49,9 @@ async def record_event(
     niche: str | None = None,
     rerank_score: float | None = None,
     result_count: int | None = None,
+    client_hash: str | None = None,
+    embedding: list[float] | None = None,
+    rejected_entry: str | None = None,
 ) -> None:
     """Append one lookup to the log. Best-effort: observability must never break
     a search, so a logging failure is swallowed rather than propagated.
@@ -57,12 +60,16 @@ async def record_event(
     candidate — set on a semantic hit (accepted) and on a miss that had a
     rejected candidate — so rerank_min_score can be tuned against real traffic.
     `result_count` is the number of cited sources returned in the reply (NULL on
-    error/empty replies) — averaged for grounding-richness-per-reply."""
+    error/empty replies) — averaged for grounding-richness-per-reply.
+    `client_hash` + `embedding` power hit-satisfaction detection (a near-duplicate
+    re-ask by the same client within the window marks the prior hit dissatisfied);
+    `rejected_entry` records an explicit reject_entry=<id> retry."""
     try:
         await pool.execute(
             "INSERT INTO lookup_event "
-            "(query_hash, outcome, distance, entry_id, niche, rerank_score, result_count) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            "(query_hash, outcome, distance, entry_id, niche, rerank_score, result_count, "
+            " client_hash, embedding, rejected_entry) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
             query_hash,
             outcome,
             distance,
@@ -70,6 +77,9 @@ async def record_event(
             niche,
             rerank_score,
             result_count,
+            client_hash,
+            embedding,
+            rejected_entry,
         )
     except Exception:  # noqa: BLE001 — never let stats logging fail the answer path
         pass
@@ -237,6 +247,69 @@ async def click_analytics(pool: asyncpg.Pool, *, top_n: int = 8) -> ClickAnalyti
         follow_through=(total / hits) if hits else 0.0,
         top_hosts=[(r["host"], r["n"]) for r in hosts],
         top_entries=[(r["query_text"], r["clicks"], r["hit_count"]) for r in entries],
+    )
+
+
+@dataclass(frozen=True)
+class SatisfactionStats:
+    """Hit-satisfaction: did callers accept the cached answers we served?
+
+    A served hit is DISSATISFIED when the same client, within
+    `satisfaction_window_minutes`, either explicitly rejected the entry
+    (reject_entry=<id> retry) or re-asked a near-duplicate question (embedding
+    distance < `satisfaction_requery_max_distance` — far tighter than the serve
+    threshold, so topic follow-ups don't count). Hits younger than the window are
+    `pending` (their client could still retry) and excluded from the rate.
+    Aggregate only — the per-client sequences never leave the database."""
+    hits_scored: int          # hits old enough to judge, with client identity
+    dissatisfied: int         # retried (implicit) or rejected (explicit) in-window
+    explicit_rejects: int     # subset of dissatisfied with a reject_entry retry
+    pending: int              # hits still inside the window — not yet scored
+    satisfaction_rate: float  # 1 - dissatisfied/hits_scored (0.0 when unscored)
+
+
+async def hit_satisfaction(pool: asyncpg.Pool) -> SatisfactionStats:
+    window = settings.satisfaction_window_minutes
+    row = await pool.fetchrow(
+        """
+        SELECT
+          count(*) FILTER (WHERE NOT pending)                   AS scored,
+          count(*) FILTER (WHERE NOT pending AND bad)           AS dissatisfied,
+          count(*) FILTER (WHERE NOT pending AND explicit)      AS explicit_rejects,
+          count(*) FILTER (WHERE pending)                       AS pending
+        FROM (
+          SELECT
+            h.ts > now() - make_interval(mins => $1) AS pending,
+            EXISTS (
+              SELECT 1 FROM lookup_event r
+              WHERE r.client_hash = h.client_hash AND r.id > h.id
+                AND r.ts <= h.ts + make_interval(mins => $1)
+                AND (r.rejected_entry = h.entry_id
+                     OR (r.embedding IS NOT NULL AND h.embedding IS NOT NULL
+                         AND (r.embedding <=> h.embedding) < $2))
+            ) AS bad,
+            EXISTS (
+              SELECT 1 FROM lookup_event r
+              WHERE r.client_hash = h.client_hash AND r.id > h.id
+                AND r.ts <= h.ts + make_interval(mins => $1)
+                AND r.rejected_entry = h.entry_id
+            ) AS explicit
+          FROM lookup_event h
+          WHERE h.outcome IN ('hit_exact','hit_semantic')
+            AND h.client_hash IS NOT NULL
+        ) t
+        """,
+        window,
+        settings.satisfaction_requery_max_distance,
+    )
+    scored = row["scored"] or 0
+    dissatisfied = row["dissatisfied"] or 0
+    return SatisfactionStats(
+        hits_scored=scored,
+        dissatisfied=dissatisfied,
+        explicit_rejects=row["explicit_rejects"] or 0,
+        pending=row["pending"] or 0,
+        satisfaction_rate=(1 - dissatisfied / scored) if scored else 0.0,
     )
 
 

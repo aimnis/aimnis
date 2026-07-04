@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     rerank_recall_max_distance: float = 0.30  # generous ANN recall filter (cos sim ≥ 0.70)
     rerank_min_score: float = 0.5        # sigmoid(logit) accept floor for a semantic hit
 
+    # Hit-satisfaction detection: a served hit counts as DISSATISFIED if the same
+    # client re-asks a near-duplicate question (or explicitly rejects the entry)
+    # within the window. The retry threshold is deliberately much tighter than the
+    # serve thresholds above: a *related follow-up* ("what's the default of X?"
+    # after an answer that mentioned X) must NOT read as a failed hit — only a
+    # near-verbatim re-ask does. 0.08 ⇒ cosine similarity ≥ 0.92.
+    satisfaction_window_minutes: int = 10
+    satisfaction_requery_max_distance: float = 0.08
+
     # Live-fallback search for cache misses. This is an ordered FALLBACK CHAIN, not
     # a single backend: each keyed provider is tried in turn and, on a 429/error/
     # empty result, live_search falls through to the next usable one, so a throttled

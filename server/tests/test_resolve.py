@@ -94,3 +94,22 @@ async def test_format_echoes_matched_question_for_polarity_check():
     # The agent must see the cached question to judge intent/polarity itself.
     assert "how do I disable telemetry in dotnet" in out
     assert "request a live search" in out
+
+
+async def test_format_semantic_hit_offers_reject_entry():
+    out = resolve.format_for_agent({
+        "source": "cache", "match": "semantic", "answer": "cached answer",
+        "matched_query": "enable http2 in nginx", "entry_id": "abc-123",
+        "results": [],
+    })
+    # The sanctioned escape hatch: retrying with reject_entry both bypasses the
+    # mis-hit and labels it for the satisfaction metric.
+    assert 'reject_entry="abc-123"' in out
+
+    # Without an entry id (unpooled), fall back to the plain disregard wording.
+    out2 = resolve.format_for_agent({
+        "source": "cache", "match": "semantic", "answer": "cached answer",
+        "matched_query": "enable http2 in nginx", "entry_id": None,
+        "results": [],
+    })
+    assert "reject_entry" not in out2 and "disregard" in out2

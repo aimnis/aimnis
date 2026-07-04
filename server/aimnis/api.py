@@ -91,6 +91,7 @@ async def api_stats():
     calib = await stats.rerank_calibration(pool)
     clicks = await stats.click_analytics(pool)
     storage = await stats.storage_stats(pool)
+    satisfaction = await stats.hit_satisfaction(pool)
     public = asdict(s)
     public.pop("top_queries", None)  # gated → /v1/stats
     return JSONResponse({
@@ -104,6 +105,9 @@ async def api_stats():
             "follow_through": clicks.follow_through,
         },
         "storage": asdict(storage),
+        # aggregate acceptance of served hits (explicit rejects + implicit near-
+        # duplicate retries); per-client sequences never leave the database
+        "hit_satisfaction": asdict(satisfaction),
     })
 
 
@@ -112,10 +116,10 @@ async def dashboard():
     pool = await db.get_pool()
     s = await stats.gather(pool)
     series = await stats.flywheel_series(pool)
-    clicks = await stats.click_analytics(pool)
+    satisfaction = await stats.hit_satisfaction(pool)
     storage = await stats.storage_stats(pool)
     asof = await pool.fetchval("SELECT now()")
-    return _render_page(s, series, clicks, storage, str(asof))
+    return _render_page(s, series, satisfaction, storage, str(asof))
 
 
 # --------------------------------------------------------------------------- #
@@ -185,17 +189,24 @@ def _human_bytes(n: float) -> str:
     return f"{n:.1f} TB"
 
 
-def _render_page(s, series: list, clicks, storage, asof: str) -> str:
+def _render_page(s, series: list, satisfaction, storage, asof: str) -> str:
     per_entry = storage.bytes_per_entry
     proj_1m = _human_bytes(per_entry * 1_000_000) if per_entry else "—"
+    # Citation clicks were replaced here by hit satisfaction: agents consume the
+    # answer text and rarely fetch links, so clicks read as a perpetual zero (and
+    # a click is as likely distrust as interest). Clicks stay in /api/stats.
+    sat_value = f"{satisfaction.satisfaction_rate:.0%}" if satisfaction.hits_scored else "—"
+    sat_sub = (
+        f"{satisfaction.hits_scored} hits scored · {satisfaction.explicit_rejects} rejected"
+        if satisfaction.hits_scored else "no scored hits yet"
+    )
     tiles = "".join([
         _tile("Cache hit rate", f"{s.hit_rate:.0%}", f"{s.hits} hits / {s.lookups_total} lookups"),
         _tile("Recent hit rate", f"{s.recent_hit_rate:.0%}", f"last {s.recent_window} lookups"),
         _tile("Corpus", f"{s.corpus_total}", f"{s.corpus_servable} servable"),
         _tile("Hit mix", f"{s.hits_exact} + {s.hits_semantic}", "exact + semantic"),
         _tile("Sources / reply", f"{s.avg_results_per_reply:.1f}", "avg cited per answer"),
-        _tile("Citations followed", f"{clicks.clicks_total}",
-              f"{clicks.follow_through:.2f} per hit"),
+        _tile("Hit satisfaction", sat_value, sat_sub),
         _tile("Pool storage", _human_bytes(storage.total_bytes),
               f"~{_human_bytes(per_entry)}/entry · ~{proj_1m} at 1M"),
     ])
@@ -248,7 +259,8 @@ def _render_page(s, series: list, clicks, storage, asof: str) -> str:
   </div>
   <footer>as of {html.escape(asof)} · <a href="/api/stats">/api/stats</a> (JSON, aggregate) ·
     per-query and per-source detail is available to API-key holders at <code>/v1/stats</code> ·
-    click signal is aggregate (source + host + time) — no per-user data</footer>
+    satisfaction = served hits not rejected or re-asked near-verbatim within
+    {settings.satisfaction_window_minutes} min — aggregate only, no per-user data</footer>
 </div></body></html>"""
 
 

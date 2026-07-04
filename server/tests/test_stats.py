@@ -170,3 +170,112 @@ def test_format_shapes():
     assert "60%" in out          # all-time hit rate
     assert "80%" in out          # recent window
     assert "how to register pgvector" in out
+
+
+# ---- hit satisfaction (explicit rejects + implicit near-duplicate retries) ---- #
+
+DIM = 384
+
+
+def _vec(i: int) -> list[float]:
+    v = [0.0] * DIM
+    v[i] = 1.0
+    return v
+
+
+async def _backdate(pool, minutes: int) -> None:
+    """Shift the most recently inserted lookup_event into the past."""
+    await pool.execute(
+        "UPDATE lookup_event SET ts = now() - make_interval(mins => $1) "
+        "WHERE id = (SELECT max(id) FROM lookup_event)",
+        minutes,
+    )
+
+
+async def test_satisfaction_quiet_hit_is_satisfied(clean):
+    e = await _seed_entry(clean, query_text="q", query_hash="a")
+    await stats.record_event(clean, query_hash="a", outcome="hit_exact", entry_id=e,
+                             client_hash="c1", embedding=_vec(0))
+    await _backdate(clean, 20)  # older than the window, no follow-up
+
+    sat = await stats.hit_satisfaction(clean)
+    assert (sat.hits_scored, sat.dissatisfied, sat.pending) == (1, 0, 0)
+    assert sat.satisfaction_rate == 1.0
+
+
+async def test_satisfaction_near_duplicate_retry_flags_hit(clean):
+    e = await _seed_entry(clean, query_text="q", query_hash="a")
+    await stats.record_event(clean, query_hash="a", outcome="hit_semantic", entry_id=e,
+                             client_hash="c1", embedding=_vec(0))
+    await _backdate(clean, 20)
+    # Same client re-asks a near-verbatim question (identical embedding) in-window.
+    await stats.record_event(clean, query_hash="a2", outcome="miss",
+                             client_hash="c1", embedding=_vec(0))
+    await _backdate(clean, 15)
+
+    sat = await stats.hit_satisfaction(clean)
+    # Only the hit is scored (the retry itself is a miss); it counts as implicit
+    # dissatisfaction, not an explicit reject.
+    assert (sat.hits_scored, sat.dissatisfied, sat.explicit_rejects) == (1, 1, 0)
+    assert sat.satisfaction_rate == 0.0
+
+
+async def test_satisfaction_explicit_reject_flags_hit(clean):
+    e = await _seed_entry(clean, query_text="q", query_hash="a")
+    await stats.record_event(clean, query_hash="a", outcome="hit_semantic", entry_id=e,
+                             client_hash="c1", embedding=_vec(0))
+    await _backdate(clean, 20)
+    # Explicit reject retry: different wording (orthogonal embedding), but names the entry.
+    await stats.record_event(clean, query_hash="b", outcome="miss",
+                             client_hash="c1", embedding=_vec(5), rejected_entry=e)
+    await _backdate(clean, 15)
+
+    sat = await stats.hit_satisfaction(clean)
+    assert sat.dissatisfied == 1
+    assert sat.explicit_rejects == 1
+
+
+async def test_satisfaction_follow_up_and_other_client_do_not_flag(clean):
+    e = await _seed_entry(clean, query_text="q", query_hash="a")
+    await stats.record_event(clean, query_hash="a", outcome="hit_exact", entry_id=e,
+                             client_hash="c1", embedding=_vec(0))
+    await _backdate(clean, 20)
+    # Topic follow-up (orthogonal embedding, same client, in-window): not a retry.
+    await stats.record_event(clean, query_hash="f", outcome="miss",
+                             client_hash="c1", embedding=_vec(5))
+    await _backdate(clean, 15)
+    # Near-duplicate but from a DIFFERENT client: says nothing about c1's hit.
+    await stats.record_event(clean, query_hash="a2", outcome="miss",
+                             client_hash="c2", embedding=_vec(0))
+    await _backdate(clean, 14)
+
+    sat = await stats.hit_satisfaction(clean)
+    assert (sat.hits_scored, sat.dissatisfied) == (1, 0)
+    assert sat.satisfaction_rate == 1.0
+
+
+async def test_satisfaction_fresh_hit_is_pending(clean):
+    e = await _seed_entry(clean, query_text="q", query_hash="a")
+    await stats.record_event(clean, query_hash="a", outcome="hit_exact", entry_id=e,
+                             client_hash="c1", embedding=_vec(0))  # ts = now()
+
+    sat = await stats.hit_satisfaction(clean)
+    assert (sat.hits_scored, sat.pending) == (0, 1)
+
+
+async def test_satisfaction_ignores_untracked_and_out_of_window(clean):
+    e = await _seed_entry(clean, query_text="q", query_hash="a")
+    # No client identity (local/stdio) → not scored at all.
+    await stats.record_event(clean, query_hash="a", outcome="hit_exact", entry_id=e,
+                             embedding=_vec(0))
+    await _backdate(clean, 30)
+    # Tracked hit; near-duplicate retry arrives AFTER the window closed.
+    await stats.record_event(clean, query_hash="a", outcome="hit_exact", entry_id=e,
+                             client_hash="c1", embedding=_vec(0))
+    await _backdate(clean, 25)
+    await stats.record_event(clean, query_hash="a2", outcome="miss",
+                             client_hash="c1", embedding=_vec(0))
+    await _backdate(clean, 11)
+
+    sat = await stats.hit_satisfaction(clean)
+    assert (sat.hits_scored, sat.dissatisfied) == (1, 0)

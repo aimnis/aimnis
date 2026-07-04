@@ -90,7 +90,16 @@ class McpEdge:
             return
 
         async def respond(status: int, message: str) -> None:
-            body = json.dumps({"error": message}).encode()
+            payload = {"error": message}
+            if status == 401:
+                # Agents DO read error bodies (they surface to the model), so a 401
+                # is a self-serve onboarding surface, not just a refusal.
+                payload["hint"] = (
+                    "Send a key as 'Authorization: Bearer aim_...' or 'X-API-Key'. "
+                    "Free eval keys: https://aimnis.com/register — setup guides: "
+                    "https://aimnis.com/setup"
+                )
+            body = json.dumps(payload).encode()
             await send({"type": "http.response.start", "status": status,
                         "headers": [(b"content-type", b"application/json"),
                                     (b"content-length", str(len(body)).encode())]})
@@ -106,7 +115,11 @@ class McpEdge:
             return
 
         if _is_admin(presented):
-            await self._manager.handle_request(scope, receive, send)
+            id_token = apikeys.current_client_id.set("admin")
+            try:
+                await self._manager.handle_request(scope, receive, send)
+            finally:
+                apikeys.current_client_id.reset(id_token)
             return
 
         # Buffer the request body so we can (a) decide whether this message is a
@@ -123,6 +136,7 @@ class McpEdge:
 
         pool = await db.get_pool()
         client_keys = None
+        client_id = None
         if scope.get("method") == "POST" and _wants_tool_call(body):
             res = await apikeys.reserve(pool, presented)
             if not res.granted:
@@ -135,6 +149,7 @@ class McpEdge:
             # Tool functions can't take extra parameters over MCP, so they travel
             # via a contextvar (tasks the MCP layer spawns inherit this context).
             if res.client_id:
+                client_id = res.client_id
                 client_keys = await apikeys.load_client_keys(pool, res.client_id)
         elif not await apikeys.verify(pool, presented):
             await respond(401, "invalid or missing API key")
@@ -150,9 +165,11 @@ class McpEdge:
             return await receive()
 
         token = apikeys.current_client_keys.set(client_keys)
+        id_token = apikeys.current_client_id.set(client_id)
         try:
             await self._manager.handle_request(scope, replay, send)
         finally:
+            apikeys.current_client_id.reset(id_token)
             apikeys.current_client_keys.reset(token)
 
 

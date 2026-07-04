@@ -16,6 +16,8 @@ later by the background refresh pass. Answers are AI-generated and labeled as su
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
@@ -181,7 +183,8 @@ async def _distill_and_score(
 
 
 async def _cache_lookup(
-    db: asyncpg.Pool, query: str, h: str, embedding: list[float]
+    db: asyncpg.Pool, query: str, h: str, embedding: list[float],
+    exclude: str | None = None,
 ) -> tuple[pool_mod.Hit | None, float | None, float | None]:
     """Resolve a query to a cached hit. Exact hash first; then, on the semantic
     path, retrieve the top-k nearest candidates and rerank their QUESTIONS with a
@@ -192,16 +195,18 @@ async def _cache_lookup(
     case can be logged for tuning; both are None for an exact hit or when reranking
     is off/unavailable. If the reranker can't load, degrades to the plain
     nearest-within-cache_max_distance gate so a reranker hiccup never breaks search."""
-    exact = await pool_mod.lookup_exact(db, query_hash=h)
+    exact = await pool_mod.lookup_exact(db, query_hash=h, exclude=exclude)
     if exact is not None:
         return exact, None, None
 
     if not settings.rerank_enabled:
-        return await pool_mod.lookup(db, query_hash=h, embedding=embedding), None, None
+        return await pool_mod.lookup(
+            db, query_hash=h, embedding=embedding, exclude=exclude
+        ), None, None
 
     cands = await pool_mod.candidates(
         db, embedding=embedding, k=settings.rerank_candidates,
-        max_distance=settings.rerank_recall_max_distance,
+        max_distance=settings.rerank_recall_max_distance, exclude=exclude,
     )
     if not cands:
         return None, None, None
@@ -226,11 +231,18 @@ async def _cache_lookup(
 
 
 async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = None,
-                         client_keys=None) -> dict:
+                         client_keys=None, client_id: str | None = None,
+                         reject_entry: str | None = None) -> dict:
     # BYOK: `client_keys` (apikeys.ClientKeys) carries the calling client's own
     # upstream credentials. Their misses spend their quota (search + distill);
     # everything else — cache lookup, scrubbing, pooling — is identical. Used only
     # for THIS request, never for other users' queries (ToS invariant).
+    #
+    # `client_id` (a DB client uuid, or "admin" for env keys) is hashed into the
+    # lookup log so hit-satisfaction can sequence ONE client's lookups; the raw id
+    # never lands in lookup_event. `reject_entry` is the explicit-reject retry: the
+    # named entry is excluded from this lookup, its reject_count bumps, and the
+    # reject is logged as a dissatisfaction label on the prior hit.
     #
     # Scrub FIRST: secrets/PII must never reach a third party (Brave/OpenRouter)
     # or the pool. Everything downstream uses the redacted text; a secret-dense
@@ -238,11 +250,23 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
     scrubbed = scrub_mod.scrub(query)
     query = scrubbed.text
 
+    client_hash = (
+        hashlib.sha256(client_id.encode()).hexdigest()[:16] if client_id else None
+    )
+    if reject_entry is not None:
+        try:  # agent-supplied — a malformed id is ignored, never an error
+            reject_entry = str(uuid.UUID(reject_entry))
+        except ValueError:
+            reject_entry = None
+        else:
+            await pool_mod.bump_reject(db, reject_entry)
+
     norm = normalize(query)
     h = query_hash(norm)
     embedding = await asyncio.to_thread(_embed, query)
 
-    hit, rerank_score, best_distance = await _cache_lookup(db, query, h, embedding)
+    hit, rerank_score, best_distance = await _cache_lookup(
+        db, query, h, embedding, exclude=reject_entry)
     if hit is not None:
         # Serve the top-K prefix of the stored (selector-ordered) sources; the
         # extras stored beyond K are the candidate pool for re-selection, not shown.
@@ -257,6 +281,9 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
             niche=niche,
             rerank_score=rerank_score,
             result_count=len(served),
+            client_hash=client_hash,
+            embedding=embedding,
+            rejected_entry=reject_entry,
         )
         return {
             "source": "cache",
@@ -285,7 +312,9 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
         results = [asdict(r) for r in await live_search(
             query, limit=settings.search_fetch_limit, client_keys=client_keys)]
     except SearchError as exc:
-        await stats.record_event(db, query_hash=h, outcome="error", niche=niche)
+        await stats.record_event(db, query_hash=h, outcome="error", niche=niche,
+                                 client_hash=client_hash, embedding=embedding,
+                                 rejected_entry=reject_entry)
         return {"source": "error", "error": str(exc), "results": []}
 
     # Stamp each source with when we fetched it, so per-source freshness travels
@@ -297,7 +326,9 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
     # A transient empty result set (e.g. all upstream engines rate-limited) must
     # NOT be pooled — it would be served as a permanent exact-hit "no results".
     if not results:
-        await stats.record_event(db, query_hash=h, outcome="error", niche=niche)
+        await stats.record_event(db, query_hash=h, outcome="error", niche=niche,
+                                 client_hash=client_hash, embedding=embedding,
+                                 rejected_entry=reject_entry)
         return {"source": "live", "results": [], "answer": None, "distilled": False,
                 "entry_id": None}
 
@@ -379,6 +410,7 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
         db, query_hash=h, outcome="miss", entry_id=entry_id, niche=niche,
         distance=best_distance, rerank_score=rerank_score,
         result_count=len(served),
+        client_hash=client_hash, embedding=embedding, rejected_entry=reject_entry,
     )
     return {
         "source": "live",
@@ -433,12 +465,21 @@ def format_for_agent(res: dict) -> str:
             when = f" cached {cached_at[:10]}" + (f" ({age})" if age else "")
         if res.get("match") == "semantic" and matched:
             # Surface the exact question this answer was cached for so the agent
-            # can verify it matches its intent (esp. polarity: enable vs disable)
-            # and disregard + request a live search if not.
+            # can verify it matches its intent (esp. polarity: enable vs disable),
+            # and give it a sanctioned escape hatch: retrying with reject_entry
+            # skips this entry AND labels the mis-serve for ranking (explicit
+            # dissatisfaction signal — see stats.hit_satisfaction).
+            entry = res.get("entry_id")
+            reject_hint = (
+                f' If that is not what you are asking, search again with '
+                f'reject_entry="{entry}" to skip this cached answer and search live.'
+                if entry else
+                " If that is not what you are asking, disregard it and request a "
+                "live search."
+            )
             lines.append(
                 f'[Aimnis · cache hit (semantic match){ai} —{when}; this answer was cached '
-                f'for the question: "{matched}". If that is not what you are asking, '
-                f'disregard it and request a live search. Verify time-sensitive facts.]'
+                f'for the question: "{matched}".{reject_hint} Verify time-sensitive facts.]'
             )
         else:
             lines.append(

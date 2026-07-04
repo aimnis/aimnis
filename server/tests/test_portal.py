@@ -137,7 +137,7 @@ async def test_issued_key_authenticates_through_gateway(clean, monkeypatch):
     # No env gateway keys → auth falls through to the DB-backed client key.
     monkeypatch.setattr(settings, "gateway_api_keys", [])
 
-    async def fake_resolve(pool, query, *, niche=None, client_keys=None):
+    async def fake_resolve(pool, query, *, niche=None, client_keys=None, client_id=None, reject_entry=None):
         return {"source": "cache", "match": "exact", "distance": 0.0,
                 "answer": "ok", "results": [], "model": "m", "entry_id": 1}
     monkeypatch.setattr(resolve, "resolve_search", fake_resolve)

@@ -28,17 +28,20 @@ from .db import get_pool
 mcp = FastMCP("aimnis-search")
 
 
-async def _remote_search(query: str) -> str:
+async def _remote_search(query: str, reject_entry: str | None = None) -> str:
     """Call a hosted Aimnis gateway over HTTP (remote mode)."""
     import httpx
 
     headers = {}
     if settings.gateway_client_api_key:
         headers["Authorization"] = f"Bearer {settings.gateway_client_api_key}"
+    payload: dict = {"query": query}
+    if reject_entry:
+        payload["reject_entry"] = reject_entry
     async with httpx.AsyncClient(timeout=settings.gateway_timeout_seconds) as client:
         r = await client.post(
             f"{settings.gateway_url.rstrip('/')}/v1/search",
-            json={"query": query},
+            json=payload,
             headers=headers,
         )
         r.raise_for_status()
@@ -68,26 +71,32 @@ async def _remote_stats() -> str:
 
 
 @mcp.tool()
-async def search(query: str) -> str:
+async def search(query: str, reject_entry: str | None = None) -> str:
     """Search the web via Aimnis.
 
     Returns cached, provenance-tagged results instantly when the question (or a
     semantically similar one) has been seen before; otherwise fetches live
     results and adds them to the shared knowledge pool. Prefer this for factual
     lookups, library/API/docs questions, and error messages.
+
+    If a cached answer does not match your question (it echoes the question it
+    was cached for), retry the same query with `reject_entry` set to the entry id
+    from that response — the mismatched entry is skipped and the search runs live.
     """
     # Remote mode: talk to the hosted gateway. Local mode: resolve against the
     # local pool. The switch is AIMNIS_GATEWAY_URL.
     if settings.gateway_url:
-        return await _remote_search(query)
+        return await _remote_search(query, reject_entry)
     db = await get_pool()
     # BYOK: on the hosted /mcp edge the caller's own upstream credentials arrive
     # via this contextvar (set by mcp_http per metered call); stdio/local runs get
-    # the default None ⇒ service keys.
+    # the default None ⇒ service keys. current_client_id travels the same way and
+    # feeds hit-satisfaction sequencing.
     from . import apikeys
 
     result = await resolve.resolve_search(
-        db, query, client_keys=apikeys.current_client_keys.get()
+        db, query, client_keys=apikeys.current_client_keys.get(),
+        client_id=apikeys.current_client_id.get(), reject_entry=reject_entry,
     )
     return resolve.format_for_agent(result)
 

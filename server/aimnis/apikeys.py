@@ -31,6 +31,13 @@ current_client_keys: ContextVar["ClientKeys | None"] = ContextVar(
     "aimnis_client_keys", default=None
 )
 
+# Request-scoped caller identity for the MCP edge, same mechanism as above: the
+# DB client uuid, or "admin" for env admin keys. Feeds hit-satisfaction sequencing
+# (hashed before it touches the lookup log). Default None ⇒ untracked (stdio/local).
+current_client_id: ContextVar[str | None] = ContextVar(
+    "aimnis_client_id", default=None
+)
+
 
 def generate_key() -> str:
     """A fresh opaque client key: `aim_<43 url-safe chars>`."""

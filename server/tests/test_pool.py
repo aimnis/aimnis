@@ -151,3 +151,28 @@ async def test_sources_round_trip(clean):
     hit = await pool.lookup(clean, query_hash=query_hash(normalize(text)), embedding=V_A)
     assert hit is not None
     assert hit.sources == srcs
+
+
+async def test_exclude_skips_rejected_entry(clean):
+    text = "how to fix ImportError in python"
+    rejected = await _seed(clean, text, embedding=V_A, answer_text="wrong answer")
+
+    h = query_hash(normalize(text))
+    # Exact path: the excluded entry must not be re-served on the retry...
+    assert await pool.lookup_exact(clean, query_hash=h, exclude=rejected) is None
+    # ...and the semantic candidate pool must not contain it either.
+    cands = await pool.candidates(clean, embedding=V_NEAR, k=5, exclude=rejected)
+    assert rejected not in [c.id for c in cands]
+
+    # A second (non-rejected) entry with different text still serves semantically.
+    kept = await _seed(clean, "how to fix an ImportError", embedding=V_A)
+    hit = await pool.lookup(clean, query_hash="no-exact", embedding=V_NEAR, exclude=rejected)
+    assert hit is not None and hit.id == kept
+
+
+async def test_bump_reject(clean):
+    entry_id = await _seed(clean, "mis-serving entry", embedding=V_A)
+    await pool.bump_reject(clean, entry_id)
+    await pool.bump_reject(clean, entry_id)
+    n = await clean.fetchval("SELECT reject_count FROM pool_entry WHERE id = $1", entry_id)
+    assert n == 2

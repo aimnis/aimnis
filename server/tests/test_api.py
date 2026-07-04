@@ -217,7 +217,8 @@ async def test_gateway_search_with_key(clean, monkeypatch):
     """Accepts the X-API-Key header and returns the resolution dict + rendered text."""
     monkeypatch.setattr(settings, "gateway_api_keys", ["secret"])
 
-    async def fake_resolve(pool, query, *, niche=None, client_keys=None):
+    async def fake_resolve(pool, query, *, niche=None, client_keys=None,
+                           client_id=None, reject_entry=None):
         return {"source": "cache", "match": "exact", "distance": 0.0,
                 "answer": "42.", "results": [], "model": "m", "entry_id": 1}
     monkeypatch.setattr(resolve, "resolve_search", fake_resolve)

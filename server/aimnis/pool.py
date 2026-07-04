@@ -84,13 +84,19 @@ async def insert(
     return str(row["id"])
 
 
-async def lookup_exact(pool: asyncpg.Pool, *, query_hash: str) -> Hit | None:
+async def lookup_exact(
+    pool: asyncpg.Pool, *, query_hash: str, exclude: str | None = None
+) -> Hit | None:
     """Exact normalized-hash match — unambiguous same-intent hit. Bumps hit_count
-    (an exact match is always served)."""
+    (an exact match is always served). `exclude` skips one entry id — the caller's
+    explicitly rejected entry must never be re-served on the retry."""
     exact = await pool.fetchrow(
         f"SELECT id, query_text, answer_text, sources, model, content_at FROM pool_entry "
-        f"WHERE query_hash = $1 AND {_SERVABLE} ORDER BY updated_at DESC LIMIT 1",
+        f"WHERE query_hash = $1 AND {_SERVABLE} "
+        f"AND ($2::uuid IS NULL OR id <> $2::uuid) "
+        f"ORDER BY updated_at DESC LIMIT 1",
         query_hash,
+        exclude,
     )
     if exact is not None:
         await _bump_hit(pool, exact["id"])
@@ -104,20 +110,24 @@ async def candidates(
     embedding: list[float],
     k: int = 5,
     max_distance: float | None = None,
+    exclude: str | None = None,
 ) -> list[Hit]:
     """Top-k nearest servable entries within `max_distance`, nearest first.
 
     A candidate GENERATOR for the reranker — it does NOT decide the hit and does
     NOT bump hit_count (the caller bumps via mark_served only when it commits to
-    serving one). All returned hits carry match='semantic'."""
+    serving one). All returned hits carry match='semantic'. `exclude` drops one
+    entry id (the caller's explicitly rejected entry on a retry)."""
     threshold = settings.cache_max_distance if max_distance is None else max_distance
     rows = await pool.fetch(
         f"SELECT id, query_text, answer_text, sources, model, content_at, "
         f"       (embedding <=> $1) AS distance FROM pool_entry "
         f"WHERE {_SERVABLE} AND embedding IS NOT NULL "
+        f"AND ($3::uuid IS NULL OR id <> $3::uuid) "
         f"ORDER BY embedding <=> $1 LIMIT $2",
         embedding,
         k,
+        exclude,
     )
     return [
         _to_hit(r, distance=float(r["distance"]), match="semantic")
@@ -137,19 +147,21 @@ async def lookup(
     query_hash: str,
     embedding: list[float] | None,
     max_distance: float | None = None,
+    exclude: str | None = None,
 ) -> Hit | None:
     """Exact hash match first, then single nearest-neighbour within max_distance.
 
     Retained as the plain (no-rerank) lookup: used when reranking is disabled and
     by direct callers/tests. The reranked path in resolve uses lookup_exact +
     candidates + mark_served instead."""
-    exact = await lookup_exact(pool, query_hash=query_hash)
+    exact = await lookup_exact(pool, query_hash=query_hash, exclude=exclude)
     if exact is not None:
         return exact
     if embedding is None:
         return None
     threshold = settings.cache_max_distance if max_distance is None else max_distance
-    top = await candidates(pool, embedding=embedding, k=1, max_distance=threshold)
+    top = await candidates(pool, embedding=embedding, k=1, max_distance=threshold,
+                           exclude=exclude)
     if top:
         await mark_served(pool, top[0].id)
         return top[0]
@@ -274,6 +286,15 @@ async def update_answer(
         output_trainable,
         attribution_required,
         no_grounded_cache,
+    )
+
+
+async def bump_reject(pool: asyncpg.Pool, entry_id) -> None:
+    """Record an explicit reject (reject_entry retry) against an entry. hit_count's
+    counterpart: a high reject/hit ratio marks a mis-serving entry for demotion."""
+    await pool.execute(
+        "UPDATE pool_entry SET reject_count = reject_count + 1 WHERE id = $1",
+        entry_id,
     )
 
 

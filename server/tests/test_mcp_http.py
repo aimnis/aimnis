@@ -55,6 +55,8 @@ async def test_mcp_requires_key(clean, monkeypatch):
     async with _client(clean, monkeypatch) as c:
         r = await c.post("/mcp", headers=_MCP_HEADERS, json=_TOOLS_LIST)
         assert r.status_code == 401
+        # Agents read error bodies: a 401 must point at self-serve onboarding.
+        assert "aimnis.com/register" in r.json().get("hint", "")
         r = await c.post("/mcp", headers={**_MCP_HEADERS, "X-API-Key": "nope"},
                          json=_TOOLS_LIST)
         assert r.status_code == 401

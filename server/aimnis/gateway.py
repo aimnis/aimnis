@@ -30,6 +30,11 @@ from .config import settings
 
 router = APIRouter(prefix="/v1")
 
+# Agents read error bodies: make the 401 a self-serve onboarding pointer, not
+# just a refusal (mirrors the /mcp edge's 401 hint).
+_KEY_HINT = ("invalid or missing API key — send 'Authorization: Bearer aim_...' or "
+             "'X-API-Key'; free eval keys at https://aimnis.com/register")
+
 
 @dataclass(frozen=True)
 class AuthContext:
@@ -47,7 +52,7 @@ async def require_api_key(
     if not presented and authorization and authorization.lower().startswith("bearer "):
         presented = authorization[7:].strip()
     if not presented:
-        raise HTTPException(status_code=401, detail="invalid or missing API key")
+        raise HTTPException(status_code=401, detail=_KEY_HINT)
 
     # Admin/bootstrap path: env allowlist, unlimited + unmetered. Constant-time compare
     # (a plain `in` short-circuits byte-by-byte, leaking key material via timing);
@@ -65,12 +70,15 @@ async def require_api_key(
         return AuthContext(client_id=res.client_id)
     if res.reason in ("rate_minute", "rate_day"):
         raise HTTPException(status_code=429, detail=f"rate limit exceeded ({res.reason})")
-    raise HTTPException(status_code=401, detail="invalid or missing API key")
+    raise HTTPException(status_code=401, detail=_KEY_HINT)
 
 
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=8000)
     niche: str | None = None
+    # Explicit reject of a prior cache hit: skip this entry, search live, and label
+    # the mis-serve for ranking (see resolve.resolve_search / stats.hit_satisfaction).
+    reject_entry: str | None = None
 
 
 @router.post("/search")
@@ -80,8 +88,11 @@ async def search(req: SearchRequest, auth: AuthContext = Depends(require_api_key
     client_keys = (
         await apikeys.load_client_keys(pool, auth.client_id) if auth.client_id else None
     )
+    # "admin" lumps all env-key traffic as one caller for satisfaction sequencing —
+    # coarse, but env keys are the operator's own.
     result = await resolve.resolve_search(
-        pool, req.query, niche=req.niche, client_keys=client_keys
+        pool, req.query, niche=req.niche, client_keys=client_keys,
+        client_id=auth.client_id or "admin", reject_entry=req.reject_entry,
     )
     # `format_for_agent` gives the ready-to-render text; include it so a thin client
     # doesn't need to replicate rendering, while keeping the structured fields too.
@@ -98,4 +109,6 @@ async def stats_endpoint(_auth: AuthContext = Depends(require_api_key)) -> dict:
     pool = await db.get_pool()
     s = await stats.gather(pool)
     clicks = await stats.click_analytics(pool)
-    return {**asdict(s), "click_analytics": asdict(clicks)}
+    satisfaction = await stats.hit_satisfaction(pool)
+    return {**asdict(s), "click_analytics": asdict(clicks),
+            "hit_satisfaction": asdict(satisfaction)}
