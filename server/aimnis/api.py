@@ -264,6 +264,32 @@ def _render_page(s, series: list, satisfaction, storage, asof: str) -> str:
 </div></body></html>"""
 
 
+# Markdown for agents: any HTML page is re-served as markdown when the client
+# asks for it (`Accept: text/markdown` — Cloudflare's Markdown-for-Agents
+# convention), cutting the token cost of reading our pages by ~10x. Browsers
+# (no markdown in Accept) keep getting HTML; `Vary: Accept` keeps caches honest.
+from starlette.responses import Response as _RawResponse  # noqa: E402
+
+from . import markdown as _md  # noqa: E402
+
+
+@app.middleware("http")
+async def _markdown_for_agents(request, call_next):
+    response = await call_next(request)
+    if not response.headers.get("content-type", "").startswith("text/html"):
+        return response
+    response.headers.append("Vary", "Accept")
+    if "text/markdown" not in request.headers.get("accept", ""):
+        return response
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    md = _md.from_html(body.decode("utf-8"))
+    headers = {k: v for k, v in response.headers.items()
+               if k.lower() not in ("content-length", "content-type")}
+    headers["x-markdown-tokens"] = str(_md.token_estimate(md))
+    return _RawResponse(md, status_code=response.status_code,
+                        media_type="text/markdown; charset=utf-8", headers=headers)
+
+
 # Crawlers and agent-readiness scanners often probe with HEAD, but FastAPI
 # registers @get routes as GET-only (HEAD → 405). Allow HEAD wherever GET is
 # served — same headers (including the discovery Link header on `/`), body

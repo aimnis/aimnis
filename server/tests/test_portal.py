@@ -354,6 +354,28 @@ async def test_homepage_link_header_and_api_catalog(clean, monkeypatch):
     assert any(a.endswith("/v1/search") for a in anchors)
 
 
+async def test_markdown_negotiation(clean, monkeypatch):
+    # Agents asking for `Accept: text/markdown` get a markdown rendering of any
+    # HTML page (Cloudflare Markdown-for-Agents convention); browsers keep HTML.
+    async with _client(clean, monkeypatch) as c:
+        md = await c.get("/", headers={"Accept": "text/markdown"})
+        html = await c.get("/")
+        setup = await c.get("/setup", headers={"Accept": "text/markdown"})
+        stats_json = await c.get("/api/stats", headers={"Accept": "text/markdown"})
+    assert md.status_code == 200
+    assert md.headers["content-type"].startswith("text/markdown")
+    assert int(md.headers["x-markdown-tokens"]) > 0
+    assert "Accept" in md.headers.get("vary", "")
+    assert "# Aimnis" in md.text and "<h1" not in md.text
+    assert "[Get an eval API key](/register)" in md.text  # links survive as markdown
+    # Discovery Link header still rides on the markdown variant.
+    assert 'rel="api-catalog"' in md.headers.get("link", "")
+    # Default stays HTML; non-HTML responses are never touched.
+    assert html.headers["content-type"].startswith("text/html")
+    assert "```" in setup.text  # <pre> config blocks become fenced code
+    assert stats_json.headers["content-type"].startswith("application/json")
+
+
 async def test_head_requests_are_answered(clean, monkeypatch):
     # Crawlers and agent-readiness scanners probe with HEAD; every GET route must
     # answer it (api.py adds HEAD app-wide) with the same headers and no body.
