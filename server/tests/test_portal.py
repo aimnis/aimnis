@@ -216,6 +216,15 @@ async def test_glama_wellknown(clean, monkeypatch):
     assert r.json()["maintainers"] == [{"email": "support@aimnis.com"}]
 
 
+async def test_mcp_server_card(clean, monkeypatch):
+    async with _client(clean, monkeypatch) as c:
+        r = await c.get("/.well-known/mcp/server-card.json")
+    assert r.status_code == 200
+    card = r.json()
+    assert card["authentication"]["required"] is True
+    assert {t["name"] for t in card["tools"]} == {"search", "stats"}
+
+
 async def test_admin_toggle_requires_key(clean, monkeypatch):
     # Disabled (fail-closed) when no admin key configured.
     monkeypatch.setattr(settings, "admin_api_key", None)

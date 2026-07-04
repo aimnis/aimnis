@@ -688,6 +688,45 @@ async def glama_wellknown() -> JSONResponse:
     })
 
 
+@router.get("/.well-known/mcp/server-card.json")
+async def mcp_server_card() -> JSONResponse:
+    """Static MCP server card: capability metadata for directory scanners
+    (e.g. Smithery) that can't get past /mcp's bearer-key auth wall — we don't
+    implement OAuth, so their authenticated scan can't run. Tool names/schemas
+    must mirror mcp_server.py."""
+    return JSONResponse({
+        "serverInfo": {"name": "Aimnis", "version": "0.1.0"},
+        "authentication": {"required": True, "schemes": ["bearer"]},
+        "tools": [
+            {
+                "name": "search",
+                "description": (
+                    "Search the web via Aimnis. Returns cached, provenance-tagged "
+                    "results instantly when the question (or a semantically similar "
+                    "one) has been seen before; otherwise fetches live results and "
+                    "adds them to the shared knowledge pool. Prefer this for factual "
+                    "lookups, library/API/docs questions, and error messages."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "stats",
+                "description": (
+                    "Report Aimnis flywheel statistics: knowledge-pool (cache) size, "
+                    "cache hit rate (all-time and recent), and the most-reused queries."
+                ),
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+        ],
+        "resources": [],
+        "prompts": [],
+    })
+
+
 # --------------------------------------------------------------------------- #
 # Admin: pause/resume registration
 # --------------------------------------------------------------------------- #
