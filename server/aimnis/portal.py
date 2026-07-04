@@ -675,6 +675,20 @@ async def waitlist_submit(request: Request, email: str = Form(...)) -> HTMLRespo
 
 
 # --------------------------------------------------------------------------- #
+# Directory well-knowns
+# --------------------------------------------------------------------------- #
+@router.get("/.well-known/glama.json")
+async def glama_wellknown() -> JSONResponse:
+    """Claim file for the Glama MCP directory (glama.ai) — proves the hosted
+    connector's maintainer. The contact is the send-from mailbox (monitored)."""
+    addr = re.sub(r"^.*<|>.*$", "", settings.email_from).strip()
+    return JSONResponse({
+        "$schema": "https://glama.ai/mcp/schemas/connector.json",
+        "maintainers": [{"email": addr}],
+    })
+
+
+# --------------------------------------------------------------------------- #
 # Admin: pause/resume registration
 # --------------------------------------------------------------------------- #
 @router.post("/admin/registration")

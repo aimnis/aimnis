@@ -208,6 +208,14 @@ async def test_waitlist_dedupes_email(clean, monkeypatch):
     assert await clean.fetchval("SELECT count(*) FROM waitlist") == 1
 
 
+async def test_glama_wellknown(clean, monkeypatch):
+    monkeypatch.setattr(settings, "email_from", "Aimnis <support@aimnis.com>")
+    async with _client(clean, monkeypatch) as c:
+        r = await c.get("/.well-known/glama.json")
+    assert r.status_code == 200
+    assert r.json()["maintainers"] == [{"email": "support@aimnis.com"}]
+
+
 async def test_admin_toggle_requires_key(clean, monkeypatch):
     # Disabled (fail-closed) when no admin key configured.
     monkeypatch.setattr(settings, "admin_api_key", None)
