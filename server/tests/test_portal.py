@@ -27,6 +27,20 @@ async def test_landing_and_terms(clean, monkeypatch):
     assert "AI-generated" in terms.text
 
 
+async def test_setup_page_covers_all_agents(clean, monkeypatch):
+    async with _client(clean, monkeypatch) as c:
+        r = await c.get("/setup")
+    assert r.status_code == 200
+    body = r.text
+    # Every supported agent has a section, and the hosted MCP endpoint is shown.
+    for agent in ("OpenCode", "OpenClaw", "Hermes", "Pi", "Claude Code"):
+        assert agent in body
+    assert "/mcp" in body
+    assert "streamable" in body.lower()
+    assert "Bearer aim_YOUR_KEY" in body        # copy-paste snippets present
+    assert "/v1/search" in body                  # REST fallback documented
+
+
 async def test_register_form_shown_when_open(clean, monkeypatch):
     async with _client(clean, monkeypatch) as c:
         r = await c.get("/register")
@@ -57,7 +71,7 @@ async def test_issued_key_authenticates_through_gateway(clean, monkeypatch):
     # No env gateway keys → auth falls through to the DB-backed client key.
     monkeypatch.setattr(settings, "gateway_api_keys", [])
 
-    async def fake_resolve(pool, query, *, niche=None):
+    async def fake_resolve(pool, query, *, niche=None, client_keys=None):
         return {"source": "cache", "match": "exact", "distance": 0.0,
                 "answer": "ok", "results": [], "model": "m", "entry_id": 1}
     monkeypatch.setattr(resolve, "resolve_search", fake_resolve)
@@ -67,6 +81,42 @@ async def test_issued_key_authenticates_through_gateway(clean, monkeypatch):
         r = await c.post("/v1/search", json={"query": "hi"},
                          headers={"Authorization": f"Bearer {issued.key}"})
     assert r.status_code == 200 and r.json()["answer"] == "ok"
+
+
+async def test_register_byok_flow(clean, monkeypatch):
+    monkeypatch.setattr(settings, "byok_secret", "test-secret")
+    async with _client(clean, monkeypatch) as c:
+        form = (await c.get("/register")).text
+        assert "Bring your own keys" in form  # section visible when enabled
+
+        # Missing acknowledgement → rejected, nothing stored.
+        bad = await c.post("/register", data={
+            "email": "byok@example.com", "openrouter_key": "sk-or-x", "byok_ack": ""})
+        assert bad.status_code == 400 and "checkbox" in bad.text
+        assert await clean.fetchval("SELECT count(*) FROM api_client") == 0
+
+        # Acknowledged → issued with BYOK caps; creds stored encrypted.
+        ok = await c.post("/register", data={
+            "email": "byok@example.com", "openrouter_key": "sk-or-x",
+            "search_provider": "brave", "search_key": "BSA-x", "byok_ack": "yes"})
+    assert ok.status_code == 200
+    assert f"{settings.byok_rpd:,}" in ok.text  # boosted cap shown
+    row = await clean.fetchrow(
+        "SELECT rpd_limit, search_provider, openrouter_key_enc FROM api_client "
+        "WHERE lower(email)='byok@example.com' AND status='active'")
+    assert row["rpd_limit"] == settings.byok_rpd
+    assert row["search_provider"] == "brave"
+    assert row["openrouter_key_enc"] is not None
+
+
+async def test_register_byok_hidden_and_rejected_when_disabled(clean, monkeypatch):
+    monkeypatch.setattr(settings, "byok_secret", None)
+    async with _client(clean, monkeypatch) as c:
+        form = (await c.get("/register")).text
+        assert "Bring your own keys" not in form
+        r = await c.post("/register", data={
+            "email": "x@example.com", "openrouter_key": "sk-or-x", "byok_ack": "yes"})
+    assert r.status_code == 400 and "not available" in r.text
 
 
 async def test_paused_shows_capacity_and_captures_waitlist(clean, monkeypatch):

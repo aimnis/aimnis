@@ -91,11 +91,12 @@ def _parse_brave(data: dict, limit: int) -> list[SearchResult]:
     return results
 
 
-async def _brave_search(query: str, limit: int) -> list[SearchResult]:
-    if not settings.brave_api_key:
+async def _brave_search(query: str, limit: int, api_key: str | None = None) -> list[SearchResult]:
+    api_key = api_key or settings.brave_api_key
+    if not api_key:
         raise SearchError("brave backend selected but AIMNIS_BRAVE_API_KEY is unset")
     headers = {
-        "X-Subscription-Token": settings.brave_api_key,
+        "X-Subscription-Token": api_key,
         "Accept": "application/json",
         "Accept-Encoding": "gzip",
     }
@@ -119,14 +120,15 @@ async def _brave_search(query: str, limit: int) -> list[SearchResult]:
     return _parse_brave(data, limit)
 
 
-async def _tavily_search(query: str, limit: int) -> list[SearchResult]:
-    if not settings.tavily_api_key:
+async def _tavily_search(query: str, limit: int, api_key: str | None = None) -> list[SearchResult]:
+    api_key = api_key or settings.tavily_api_key
+    if not api_key:
         raise SearchError("tavily backend selected but AIMNIS_TAVILY_API_KEY is unset")
     try:
         async with httpx.AsyncClient(timeout=settings.search_timeout_seconds) as client:
             resp = await client.post(
                 settings.tavily_endpoint,
-                headers={"Authorization": f"Bearer {settings.tavily_api_key}",
+                headers={"Authorization": f"Bearer {api_key}",
                          "Content-Type": "application/json"},
                 json={"query": query, "max_results": min(limit, 20),
                       "search_depth": "basic"},
@@ -150,14 +152,15 @@ async def _tavily_search(query: str, limit: int) -> list[SearchResult]:
     return results
 
 
-async def _exa_search(query: str, limit: int) -> list[SearchResult]:
-    if not settings.exa_api_key:
+async def _exa_search(query: str, limit: int, api_key: str | None = None) -> list[SearchResult]:
+    api_key = api_key or settings.exa_api_key
+    if not api_key:
         raise SearchError("exa backend selected but AIMNIS_EXA_API_KEY is unset")
     try:
         async with httpx.AsyncClient(timeout=settings.search_timeout_seconds) as client:
             resp = await client.post(
                 settings.exa_endpoint,
-                headers={"x-api-key": settings.exa_api_key,
+                headers={"x-api-key": api_key,
                          "Content-Type": "application/json"},
                 json={"query": query, "numResults": min(limit, 20), "type": "auto",
                       "contents": {"text": {"maxCharacters": 500}}},
@@ -224,17 +227,34 @@ def _provider_chain() -> list[str]:
     return order
 
 
-async def live_search(query: str, *, limit: int | None = None) -> list[SearchResult]:
+async def live_search(
+    query: str, *, limit: int | None = None, client_keys=None
+) -> list[SearchResult]:
+    """Run the fallback chain. With BYOK `client_keys` (apikeys.ClientKeys), the
+    client's own provider+key is tried FIRST — their miss spends their quota — then
+    the service chain as a graceful fallback. The client key is used only for this
+    request (never for other users' queries — the BYOK ToS invariant)."""
     limit = limit or settings.search_result_limit
+
+    # (backend, api_key_override) pairs; None ⇒ the service's configured key.
+    attempts: list[tuple[str, str | None]] = []
+    if client_keys is not None and client_keys.search_provider and client_keys.search_api_key:
+        if client_keys.search_provider in _BACKENDS:
+            attempts.append((client_keys.search_provider, client_keys.search_api_key))
+    attempts += [(b, None) for b in _provider_chain()]
 
     last_err: SearchError | None = None
     tried = False
-    for backend in _provider_chain():
-        if not _usable(backend):
-            continue  # no key → skip silently
+    for backend, key_override in attempts:
+        if key_override is None and not _usable(backend):
+            continue  # no service key → skip silently
         tried = True
         try:
-            results = await globals()[_BACKENDS[backend]](query, limit)
+            fn = globals()[_BACKENDS[backend]]
+            if key_override is not None:
+                results = await fn(query, limit, api_key=key_override)
+            else:
+                results = await fn(query, limit)
             if results:
                 return results
             last_err = SearchError(f"{backend} returned no results")

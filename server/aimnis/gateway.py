@@ -20,7 +20,7 @@ Callers send a key as a bearer token (`Authorization: Bearer <key>`) or `X-API-K
 from __future__ import annotations
 
 import hmac
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -31,10 +31,17 @@ from .config import settings
 router = APIRouter(prefix="/v1")
 
 
+@dataclass(frozen=True)
+class AuthContext:
+    """Who authenticated: an env admin key (client_id None) or a DB client key."""
+
+    client_id: str | None = None
+
+
 async def require_api_key(
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None),
-) -> str:
+) -> AuthContext:
     """Fail-closed bearer/X-API-Key auth: env admin keys, then metered DB client keys."""
     presented = x_api_key
     if not presented and authorization and authorization.lower().startswith("bearer "):
@@ -49,13 +56,13 @@ async def require_api_key(
     if settings.gateway_api_keys and any(
         hmac.compare_digest(presented, k) for k in settings.gateway_api_keys
     ):
-        return presented
+        return AuthContext(client_id=None)
 
     # Metered self-serve path: authenticate + rate-limit + log in one atomic DB call.
     pool = await db.get_pool()
     res = await apikeys.reserve(pool, presented)
     if res.granted:
-        return presented
+        return AuthContext(client_id=res.client_id)
     if res.reason in ("rate_minute", "rate_day"):
         raise HTTPException(status_code=429, detail=f"rate limit exceeded ({res.reason})")
     raise HTTPException(status_code=401, detail="invalid or missing API key")
@@ -67,9 +74,15 @@ class SearchRequest(BaseModel):
 
 
 @router.post("/search")
-async def search(req: SearchRequest, _key: str = Depends(require_api_key)) -> dict:
+async def search(req: SearchRequest, auth: AuthContext = Depends(require_api_key)) -> dict:
     pool = await db.get_pool()
-    result = await resolve.resolve_search(pool, req.query, niche=req.niche)
+    # BYOK: a client with attached credentials runs their miss on their own quota.
+    client_keys = (
+        await apikeys.load_client_keys(pool, auth.client_id) if auth.client_id else None
+    )
+    result = await resolve.resolve_search(
+        pool, req.query, niche=req.niche, client_keys=client_keys
+    )
     # `format_for_agent` gives the ready-to-render text; include it so a thin client
     # doesn't need to replicate rendering, while keeping the structured fields too.
     result = dict(result)
@@ -78,7 +91,7 @@ async def search(req: SearchRequest, _key: str = Depends(require_api_key)) -> di
 
 
 @router.get("/stats")
-async def stats_endpoint(_key: str = Depends(require_api_key)) -> dict:
+async def stats_endpoint(_auth: AuthContext = Depends(require_api_key)) -> dict:
     # The authenticated view carries the per-query / per-host detail that the
     # public dashboard deliberately withholds (raw query text could echo a secret
     # the best-effort scrubber missed — see api.py). Only key holders see it.

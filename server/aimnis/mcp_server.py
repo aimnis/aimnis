@@ -21,6 +21,10 @@ from . import stats as stats_mod
 from .config import settings
 from .db import get_pool
 
+# One FastMCP instance serves BOTH transports: `python -m aimnis.mcp_server` runs it
+# over stdio on a user's machine (local or remote mode), and the hosted gateway
+# serves the same tools over streamable HTTP at /mcp (see mcp_http.py) so agents can
+# connect with just a URL + API key — no local install.
 mcp = FastMCP("aimnis-search")
 
 
@@ -77,7 +81,14 @@ async def search(query: str) -> str:
     if settings.gateway_url:
         return await _remote_search(query)
     db = await get_pool()
-    result = await resolve.resolve_search(db, query)
+    # BYOK: on the hosted /mcp edge the caller's own upstream credentials arrive
+    # via this contextvar (set by mcp_http per metered call); stdio/local runs get
+    # the default None ⇒ service keys.
+    from . import apikeys
+
+    result = await resolve.resolve_search(
+        db, query, client_keys=apikeys.current_client_keys.get()
+    )
     return resolve.format_for_agent(result)
 
 

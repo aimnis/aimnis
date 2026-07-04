@@ -6,6 +6,7 @@ deps — same constraints as the flywheel dashboard).
 
 Routes:
     GET  /                     landing — what Aimnis is + why
+    GET  /setup                per-agent setup instructions (hosted MCP endpoint + REST)
     GET  /terms                terms of use
     GET  /register             registration form (or "at capacity" + waitlist if paused)
     POST /register             issue a key (open) → show it once + email it; else waitlist
@@ -59,10 +60,16 @@ _STYLE = """
          padding:11px 20px; border-radius:8px; font-weight:600; border:0; font-size:16px; cursor:pointer; }
   .btn.secondary { background:#21304a; }
   label { display:block; color:#c9d6e5; font-size:14px; margin:14px 0 6px; }
-  input[type=email], input[type=text], textarea {
+  input[type=email], input[type=text], input[type=password], textarea, select {
     width:100%; background:#0b0f14; border:1px solid #20304a; border-radius:8px;
     color:#e6edf3; padding:11px 12px; font:inherit; }
+  input:focus, textarea:focus, select:focus { outline:none; border-color:#58a6ff; }
+  input::placeholder, textarea::placeholder { color:#5c6f88; }
+  input[type=checkbox] { accent-color:#238636; width:16px; height:16px; }
   textarea { min-height:78px; resize:vertical; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; }
+  .row select { flex:0 1 200px; }
+  .row input { flex:1 1 220px; }
   code, pre { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
   pre { background:#0b0f14; border:1px solid #20304a; border-radius:8px; padding:14px;
         overflow-x:auto; font-size:13px; color:#c9d6e5; }
@@ -83,7 +90,7 @@ def _page(title: str, body: str) -> str:
 <style>{_STYLE}</style></head>
 <body><div class="wrap">{body}
 <footer><nav><a href="/">Home</a><a href="/register">Get a key</a>
-<a href="/flywheel">Live flywheel</a><a href="/terms">Terms</a></nav>
+<a href="/setup">Agent setup</a><a href="/flywheel">Live flywheel</a><a href="/terms">Terms</a></nav>
 <p class="muted">Aimnis is an evaluation preview — best-effort, no SLA. Answers are AI-generated;
 verify time-sensitive facts. Don't send secrets or personal data in queries.</p></footer>
 </div></body></html>"""
@@ -115,23 +122,179 @@ async def landing() -> HTMLResponse:
   <ul>
     <li><b>A continuous-learning layer</b>, not a per-vendor search bolt-on — one shared corpus
         across agents that captures what happened after any model's training cutoff.</li>
-    <li><b>Cheaper and faster</b> than hitting a live web-search API on every query — you pay the
-        live cost once, then serve it from cache to everyone.</li>
+    <li><b>Cheaper and faster</b> than hitting a live web-search API on every query — the live
+        cost is paid once per new question, then the cached answer serves everyone.</li>
     <li><b>Honest provenance</b>: every answer is labeled AI-generated and carries its sources and
         freshness, so your agent can decide when to escalate to a live search.</li>
+    <li><b>Bring your own keys (optional)</b>: attach your own OpenRouter / search-provider keys
+        at registration and your misses run on <i>your</i> quota — far higher daily limits, and
+        every query you make still grows the shared pool.</li>
   </ul>
 
   <div class="card">
     <p style="margin:0 0 14px"><b>Try it.</b> Grab an evaluation API key and point your coding
-    agent at the hosted gateway.</p>
+    agent at the hosted MCP endpoint — nothing to install.</p>
     <a class="btn" href="/register">Get an eval API key</a>
+    <a class="btn secondary" href="/setup">Agent setup</a>
     <a class="btn secondary" href="/flywheel">See the live flywheel</a>
   </div>
+
+  <p class="muted">Works with any MCP-capable agent — setup guides for
+  <a href="/setup#opencode">OpenCode</a>, <a href="/setup#openclaw">OpenClaw</a>,
+  <a href="/setup#hermes">Hermes Agent</a>, <a href="/setup#pi">Pi</a>,
+  <a href="/setup#claude-code">Claude Code</a>, or <a href="/setup#rest">plain REST</a>.</p>
 
   <p class="muted">By requesting a key you agree to the <a href="/terms">Terms of Use</a>.
   Operators reserve the right to revoke any key at any time.</p>
 """
     return HTMLResponse(_page("Aimnis · Collaborative Search for Agents", body))
+
+
+# --------------------------------------------------------------------------- #
+# Setup — per-agent instructions
+# --------------------------------------------------------------------------- #
+def _snip(text: str) -> str:
+    """A copy-pasteable <pre> block (escaped verbatim snippet)."""
+    return f"<pre>{html.escape(text)}</pre>"
+
+
+@router.get("/setup", response_class=HTMLResponse)
+async def setup() -> HTMLResponse:
+    base = settings.portal_base_url.rstrip("/")
+    mcp_url = f"{base}/mcp"
+
+    opencode = _snip(f"""// opencode.json (project) — or the mcp block of your global config
+{{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {{
+    "aimnis": {{
+      "type": "remote",
+      "url": "{mcp_url}",
+      "enabled": true,
+      "headers": {{ "Authorization": "Bearer aim_YOUR_KEY" }}
+    }}
+  }}
+}}""")
+
+    openclaw = _snip(f"""// ~/.openclaw/openclaw.json — under mcp.servers
+{{
+  "mcp": {{
+    "servers": {{
+      "aimnis": {{
+        "transport": "streamable-http",
+        "url": "{mcp_url}",
+        "headers": {{ "Authorization": "Bearer aim_YOUR_KEY" }}
+      }}
+    }}
+  }}
+}}""")
+    openclaw_prefer = _snip("""// same file — make Aimnis the only web search:
+{ "tools": { "web": { "search": { "enabled": false } } } }""")
+
+    hermes = _snip(f"""# ~/.hermes/config.yaml  (put AIMNIS_KEY=aim_YOUR_KEY in ~/.hermes/.env)
+mcp_servers:
+  aimnis:
+    url: "{mcp_url}"
+    headers:
+      Authorization: "Bearer ${{AIMNIS_KEY}}"
+""")
+    hermes_prefer = _snip("""# same file — hide the built-in web_search / web_extract:
+agent:
+  disabled_toolsets:
+    - web""")
+
+    pi_mcp = _snip("pi install npm:@zhafron/pi-mcp-tools") + _snip(f"""// ~/.pi/agent/settings.json (project: .pi/settings.json)
+{{
+  "mcp": {{
+    "aimnis": {{
+      "type": "remote",
+      "url": "{mcp_url}"
+    }}
+  }}
+}}""")
+    pi_curl = _snip(f"""export AIMNIS_KEY=aim_YOUR_KEY
+curl -s {base}/v1/search \\
+  -H "Authorization: Bearer $AIMNIS_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"query": "your question"}}'""")
+
+    claude_code = _snip(f"""claude mcp add --transport http aimnis {mcp_url} \\
+    --header "Authorization: Bearer aim_YOUR_KEY\"""")
+    claude_prefer = _snip("""// .claude/settings.json — prefer Aimnis over the built-in web search:
+{ "permissions": { "deny": ["WebSearch"] } }""")
+
+    rest = _snip(f"""curl -s {base}/v1/search \\
+  -H "Authorization: Bearer aim_YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"query": "how do I undo the last git commit but keep changes staged"}}'""")
+
+    body = f"""
+  <h1>Set up your agent</h1>
+  <p class="tag">Aimnis is a hosted MCP server — most agents connect with just a URL and your key.</p>
+
+  <div class="card">
+    <p style="margin:0"><b>Endpoint</b>: <code>{html.escape(mcp_url)}</code> (MCP, streamable HTTP)<br>
+    <b>Auth</b>: <code>Authorization: Bearer aim_…</code> or <code>X-API-Key: aim_…</code><br>
+    <b>Tools</b>: <code>search</code> (cached/live web answers, cited) · <code>stats</code> (pool metrics)<br>
+    No key yet? <a href="/register">Get one</a> — it takes ten seconds.</p>
+  </div>
+
+  <h2 id="opencode">OpenCode</h2>
+  <p>Add a remote MCP server to your <code>opencode.json</code>:</p>
+  {opencode}
+  <p class="muted">OpenCode's built-in <code>websearch</code> is off unless you use the OpenCode
+  provider or set <code>OPENCODE_ENABLE_EXA</code> — leave those off and the model reaches for
+  Aimnis naturally. Tools appear as <code>aimnis_search</code> / <code>aimnis_stats</code>.</p>
+
+  <h2 id="openclaw">OpenClaw</h2>
+  <p>Register Aimnis under <code>mcp.servers</code> in <code>~/.openclaw/openclaw.json</code>
+  (or: <code>openclaw mcp add aimnis --transport streamable-http --url {html.escape(mcp_url)}</code>):</p>
+  {openclaw}
+  <p>To make Aimnis the only web search, disable the managed one:</p>
+  {openclaw_prefer}
+  <p class="muted">Verify connectivity with <code>openclaw mcp doctor --probe</code>.</p>
+
+  <h2 id="hermes">Hermes Agent</h2>
+  <p>Add Aimnis under <code>mcp_servers</code> in <code>~/.hermes/config.yaml</code>; Hermes
+  resolves <code>${{VAR}}</code> placeholders from <code>~/.hermes/.env</code>:</p>
+  {hermes}
+  <p>To route all search through Aimnis, disable the built-in web toolset:</p>
+  {hermes_prefer}
+  <p class="muted">Tools appear as <code>mcp_aimnis_search</code> / <code>mcp_aimnis_stats</code>.
+  Reload a live session with <code>/reload-mcp</code>.</p>
+
+  <h2 id="pi">Pi</h2>
+  <p>Pi has no native MCP client; the <code>pi-mcp-tools</code> extension bridges it:</p>
+  {pi_mcp}
+  <p class="muted">If your pi-mcp-tools version doesn't support auth headers on remote servers
+  yet, use the REST route below instead.</p>
+  <p>Or skip MCP entirely — Pi's idiomatic path is a CLI the agent calls via bash. Put this in
+  your project's <code>AGENTS.md</code> ("use this command for web searches") :</p>
+  {pi_curl}
+
+  <h2 id="claude-code">Claude Code</h2>
+  {claude_code}
+  {claude_prefer}
+
+  <h2 id="rest">Any other agent (REST)</h2>
+  <p>Anything that can make an HTTP request can use Aimnis — <code>POST /v1/search</code>
+  returns structured JSON plus a ready-to-render <code>formatted</code> field:</p>
+  {rest}
+
+  <h2>Good to know</h2>
+  <ul>
+    <li><b>Metering</b>: only actual searches count (MCP handshakes are free). Default limits:
+        {settings.client_default_rpm}/min, {settings.client_default_rpd}/day per key.</li>
+    <li><b>Cache hits are instant</b>; misses run a live search + distill and are slower
+        (seconds). Every answer is AI-generated and cites its sources.</li>
+    <li><b>Need more than the default daily limit?</b> Re-register with your own
+        OpenRouter / search keys attached (<a href="/register">BYOK</a>) — your misses then run
+        on your quota and your cap rises to {settings.byok_rpd:,}/day.</li>
+    <li><b>Don't send secrets</b> in queries — scrubbing is best-effort
+        (<a href="/terms">Terms</a>).</li>
+  </ul>
+"""
+    return HTMLResponse(_page("Aimnis · Agent setup", body))
 
 
 # --------------------------------------------------------------------------- #
@@ -182,10 +345,24 @@ async def terms() -> HTMLResponse:
         email and key deleted.</li>
   </ul>
 
+  <h2>Bring-your-own-keys (BYOK)</h2>
+  <ul>
+    <li>You may optionally attach your own OpenRouter and/or search-provider API keys. They are
+        stored <b>encrypted at rest</b>, used <b>exclusively to serve your own requests</b> —
+        never other users' — and <b>deleted</b> when your Aimnis key is revoked or rotated.
+        You can remove them any time by re-registering without keys, or by asking us.</li>
+    <li>You must own the attached keys, and your provider plans must permit using results for
+        AI answering and contributing distilled answers to a shared pool. Your relationship
+        with those providers (quotas, billing, their terms) remains your own.</li>
+    <li>Answers produced under your keys are provenance-tagged in the pool, so they can be
+        removed if a licensing problem ever surfaces.</li>
+  </ul>
+
   <h2>Acceptable use</h2>
   <ul>
     <li>Don't attempt to exceed or evade rate limits, register keys in bulk, or resell access.</li>
     <li>Don't use Aimnis to generate or distribute unlawful content, or to poison the pool.</li>
+    <li>Don't attach API keys you don't own or aren't licensed to use this way.</li>
   </ul>
 """
     return HTMLResponse(_page("Aimnis · Terms of Use", body))
@@ -194,6 +371,42 @@ async def terms() -> HTMLResponse:
 # --------------------------------------------------------------------------- #
 # Register
 # --------------------------------------------------------------------------- #
+def _byok_fields() -> str:
+    """The optional bring-your-own-keys section of the registration form. Only
+    rendered when BYOK is enabled server-side (encryption secret configured)."""
+    if not apikeys.byok_enabled():
+        return ""
+    return f"""
+    <details style="margin-top:18px">
+      <summary style="cursor:pointer;color:#2dd4bf;font-weight:600">
+        Bring your own keys — {settings.byok_rpd:,} requests/day instead of {settings.client_default_rpd}</summary>
+      <p class="muted" style="margin-top:10px">Optional. Attach your own upstream keys and your
+      cache <i>misses</i> run on <b>your</b> quota instead of the shared pool's — so you get far
+      higher limits ("your keys, your limits"). Keys are stored encrypted, used <b>only for your
+      own requests</b>, and deleted when your key is revoked or rotated. Cache hits stay free
+      and don't touch your keys.</p>
+      <label for="openrouter_key">OpenRouter API key (for answer distillation)</label>
+      <input type="password" id="openrouter_key" name="openrouter_key"
+             placeholder="sk-or-v1-…" autocomplete="off">
+      <label for="search_provider">Search provider + key (for live search on misses)</label>
+      <div class="row">
+        <select id="search_provider" name="search_provider">
+          <option value="">— none —</option>
+          <option value="brave">Brave Search API</option>
+          <option value="tavily">Tavily</option>
+          <option value="exa">Exa</option>
+        </select>
+        <input type="password" name="search_key" placeholder="search API key"
+               autocomplete="off">
+      </div>
+      <label style="display:flex;gap:8px;align-items:flex-start;margin-top:14px;font-size:13px;color:#8aa0bd">
+        <input type="checkbox" name="byok_ack" value="yes" style="margin-top:3px">
+        <span>I own these keys and my provider plans permit using results for AI answering and
+        contributing distilled answers to a shared pool.</span>
+      </label>
+    </details>"""
+
+
 def _register_form(error: str = "", email: str = "") -> str:
     err = f'<p class="err">{html.escape(error)}</p>' if error else ""
     return f"""
@@ -206,10 +419,12 @@ def _register_form(error: str = "", email: str = "") -> str:
            placeholder="you@example.com" autocomplete="email">
     <label for="use_case">What are you evaluating it for? (optional)</label>
     <textarea id="use_case" name="use_case" placeholder="e.g. WebSearch for Claude Code on a local model"></textarea>
+    {_byok_fields()}
     <p style="margin:18px 0 0"><button class="btn" type="submit">Create my key</button></p>
   </form>
   <p class="muted">By creating a key you agree to the <a href="/terms">Terms of Use</a>.
-  Your key is metered and revocable at any time.</p>
+  Your key is metered and revocable at any time. Re-register with the same email to rotate
+  your key or change attached keys.</p>
 """
 
 
@@ -249,33 +464,35 @@ def _key_issued_page(request: Request, issued: apikeys.IssuedKey) -> str:
   <p>We've also emailed it to {html.escape(issued.email or "you")}.</p>
 
   <h2>Point your agent at Aimnis</h2>
-  <p>Run the local MCP server in remote mode (it forwards to the hosted gateway; your queries
-  never touch a database directly):</p>
-  <pre>AIMNIS_GATEWAY_URL={html.escape(gateway_url)} \\
-AIMNIS_GATEWAY_CLIENT_API_KEY={html.escape(issued.key)} \\
-    python -m aimnis.mcp_server</pre>
-  <p>Register that command in your coding agent (Claude Code / OpenCode) as an MCP server.
-  Or call the REST endpoint directly:</p>
+  <p>Aimnis is a hosted MCP server — nothing to install. Add it to your agent:</p>
+  <pre>URL:     {html.escape(gateway_url)}/mcp        (MCP, streamable HTTP)
+Header:  Authorization: Bearer {html.escape(issued.key)}</pre>
+  <p><a class="btn" href="/setup">Per-agent setup — OpenCode, OpenClaw, Hermes, Pi, Claude Code</a></p>
+  <p>Or call the REST endpoint directly:</p>
   <pre>curl -s {html.escape(gateway_url)}/v1/search \\
   -H "Authorization: Bearer {html.escape(issued.key)}" \\
   -H "Content-Type: application/json" \\
   -d '{{"query": "how do I undo the last git commit but keep changes staged"}}'</pre>
 
-  <p class="muted">Limits: {issued.rpm_limit} requests/min, {issued.rpd_limit} requests/day.
+  <p class="muted">Limits: {issued.rpm_limit} requests/min, {issued.rpd_limit:,} requests/day.{
+    " Your own keys are attached — misses run on your quota; keys are stored encrypted,"
+    " used only for your requests, and wiped on revoke/rotate." if issued.byok else ""}
   Cache hits are instant; only misses count against the daily upstream budget. The key is
   revocable at any time — see the <a href="/terms">Terms</a>.</p>
 """
 
 
 def _key_email_html(issued: apikeys.IssuedKey, gateway_url: str) -> str:
+    setup_url = f"{settings.portal_base_url.rstrip('/')}/setup"
     return f"""<div style="font-family:system-ui,sans-serif;line-height:1.6;color:#111">
   <h2>Your Aimnis eval API key</h2>
   <p>Here's your evaluation key. Keep it secret; it's metered and revocable at any time.</p>
   <p style="font-family:monospace;font-size:15px;word-break:break-all;background:#f4f4f4;padding:12px;border-radius:6px">{html.escape(issued.key)}</p>
-  <p>Point your coding agent at the hosted gateway:</p>
-  <pre style="background:#f4f4f4;padding:12px;border-radius:6px;overflow-x:auto">AIMNIS_GATEWAY_URL={html.escape(gateway_url)}
-AIMNIS_GATEWAY_CLIENT_API_KEY={html.escape(issued.key)}
-python -m aimnis.mcp_server</pre>
+  <p>Aimnis is a hosted MCP server — nothing to install. Add it to your coding agent:</p>
+  <pre style="background:#f4f4f4;padding:12px;border-radius:6px;overflow-x:auto">URL:     {html.escape(gateway_url)}/mcp
+Header:  Authorization: Bearer {html.escape(issued.key)}</pre>
+  <p>Per-agent instructions (OpenCode, OpenClaw, Hermes, Pi, Claude Code, REST):
+  <a href="{html.escape(setup_url)}">{html.escape(setup_url)}</a></p>
   <p>Limits: {issued.rpm_limit} requests/min, {issued.rpd_limit} requests/day. Cache hits are free.</p>
   <p style="color:#666;font-size:13px">Answers are AI-generated — verify time-sensitive facts.
   Don't send secrets or personal data in queries. Removal of your data is free — just reply to ask.</p>
@@ -287,6 +504,10 @@ async def register_submit(
     request: Request,
     email: str = Form(...),
     use_case: str = Form(default=""),
+    openrouter_key: str = Form(default=""),
+    search_provider: str = Form(default=""),
+    search_key: str = Form(default=""),
+    byok_ack: str = Form(default=""),
 ) -> HTMLResponse:
     pool = await db.get_pool()
     email = email.strip()
@@ -295,15 +516,34 @@ async def register_submit(
         # Paused between form render and submit — send them to the waitlist instead.
         return HTMLResponse(_page("Aimnis · At capacity", _at_capacity(email=email)))
 
-    if not _valid_email(email):
+    def _bad(msg: str) -> HTMLResponse:
         return HTMLResponse(
-            _page("Aimnis · Get an eval key",
-                  _register_form("Please enter a valid email address.", email)),
-            status_code=400,
+            _page("Aimnis · Get an eval key", _register_form(msg, email)), status_code=400
+        )
+
+    if not _valid_email(email):
+        return _bad("Please enter a valid email address.")
+
+    # Optional BYOK: validate only if any key material was submitted.
+    openrouter_key = openrouter_key.strip()
+    search_provider = search_provider.strip()
+    search_key = search_key.strip()
+    client_keys = None
+    if openrouter_key or search_key:
+        if not apikeys.byok_enabled():
+            return _bad("Bring-your-own-keys is not available right now.")
+        if search_key and search_provider not in apikeys.SEARCH_PROVIDERS:
+            return _bad("Pick a search provider for your search key.")
+        if byok_ack != "yes":
+            return _bad("Please confirm the bring-your-own-keys terms checkbox.")
+        client_keys = apikeys.ClientKeys(
+            openrouter_api_key=openrouter_key or None,
+            search_provider=search_provider if search_key else None,
+            search_api_key=search_key or None,
         )
 
     label = use_case.strip()[:500] or None
-    issued = await apikeys.issue(pool, email=email, label=label)
+    issued = await apikeys.issue(pool, email=email, label=label, client_keys=client_keys)
 
     gateway_url = str(request.base_url).rstrip("/")
     await email_mod.send_email(

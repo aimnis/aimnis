@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 import asyncpg
@@ -21,6 +22,14 @@ import asyncpg
 from .config import settings
 
 KEY_PREFIX = "aim_"
+
+# Request-scoped BYOK credentials. The MCP edge (mcp_http) can't pass parameters
+# into tool functions, so it sets this before delegating a metered tool call and
+# the tool reads it (see mcp_server.search). The REST gateway passes ClientKeys
+# explicitly instead. Default None ⇒ service keys (stdio/local mode included).
+current_client_keys: ContextVar["ClientKeys | None"] = ContextVar(
+    "aimnis_client_keys", default=None
+)
 
 
 def generate_key() -> str:
@@ -41,6 +50,30 @@ class IssuedKey:
     email: str | None
     rpm_limit: int
     rpd_limit: int
+    byok: bool = False
+
+
+SEARCH_PROVIDERS = ("brave", "tavily", "exa")
+
+
+@dataclass(frozen=True)
+class ClientKeys:
+    """A client's own upstream credentials (BYOK). Used EXCLUSIVELY for that
+    client's requests — never to serve other users' misses (the line between
+    legitimate BYOK and ToS-violating quota pooling). Never logged, never
+    returned by any API."""
+
+    openrouter_api_key: str | None = None
+    search_provider: str | None = None
+    search_api_key: str | None = None
+
+    def __bool__(self) -> bool:
+        return bool(self.openrouter_api_key or (self.search_provider and self.search_api_key))
+
+
+def byok_enabled() -> bool:
+    """BYOK is fail-closed: without an encryption secret nothing is stored or read."""
+    return bool(settings.byok_secret)
 
 
 @dataclass(frozen=True)
@@ -57,20 +90,34 @@ async def issue(
     label: str | None = None,
     rpm_limit: int | None = None,
     rpd_limit: int | None = None,
+    client_keys: ClientKeys | None = None,
 ) -> IssuedKey:
     """Mint a new active key. If an active key already exists for this email it is
-    revoked first (re-registering rotates the key — a lost-key self-serve path),
-    keeping the one-active-key-per-email invariant."""
+    revoked first (re-registering rotates the key — a lost-key self-serve path, and
+    also the way to attach/update BYOK credentials), keeping the one-active-key-
+    per-email invariant. BYOK: providing `client_keys` stores them encrypted and
+    grants the (much higher) BYOK caps — their misses spend their own quota."""
+    byok = bool(client_keys)
+    if byok and not byok_enabled():
+        raise RuntimeError("BYOK is disabled (AIMNIS_BYOK_SECRET is not set)")
+    if byok and client_keys.search_provider and client_keys.search_provider not in SEARCH_PROVIDERS:
+        raise ValueError(f"unknown search provider {client_keys.search_provider!r}")
+
     key = generate_key()
     key_hash = hash_key(key)
     prefix = key[: len(KEY_PREFIX) + 8]  # e.g. "aim_A1b2C3d4"
-    rpm = rpm_limit if rpm_limit is not None else settings.client_default_rpm
-    rpd = rpd_limit if rpd_limit is not None else settings.client_default_rpd
+    default_rpm = settings.byok_rpm if byok else settings.client_default_rpm
+    default_rpd = settings.byok_rpd if byok else settings.client_default_rpd
+    rpm = rpm_limit if rpm_limit is not None else default_rpm
+    rpd = rpd_limit if rpd_limit is not None else default_rpd
 
     async with pool.acquire() as conn, conn.transaction():
         if email:
+            # Rotate: revoke the previous key AND wipe its stored credentials — a
+            # revoked row must never keep decryptable third-party keys around.
             await conn.execute(
-                "UPDATE api_client SET status='revoked', revoked_at=now() "
+                "UPDATE api_client SET status='revoked', revoked_at=now(), "
+                "openrouter_key_enc=NULL, search_provider=NULL, search_key_enc=NULL "
                 "WHERE lower(email)=lower($1) AND status='active'",
                 email,
             )
@@ -79,6 +126,19 @@ async def issue(
             "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, email, rpm_limit, rpd_limit",
             key_hash, prefix, label, email, rpm, rpd,
         )
+        if byok:
+            await conn.execute(
+                "UPDATE api_client SET "
+                "  openrouter_key_enc = CASE WHEN $2::text IS NULL THEN NULL "
+                "                            ELSE pgp_sym_encrypt($2, $5) END, "
+                "  search_provider    = $3, "
+                "  search_key_enc     = CASE WHEN $4::text IS NULL THEN NULL "
+                "                            ELSE pgp_sym_encrypt($4, $5) END "
+                "WHERE id = $1",
+                row["id"], client_keys.openrouter_api_key,
+                client_keys.search_provider if client_keys.search_api_key else None,
+                client_keys.search_api_key, settings.byok_secret,
+            )
     return IssuedKey(
         key=key,
         id=str(row["id"]),
@@ -86,7 +146,31 @@ async def issue(
         email=row["email"],
         rpm_limit=row["rpm_limit"],
         rpd_limit=row["rpd_limit"],
+        byok=byok,
     )
+
+
+async def load_client_keys(pool: asyncpg.Pool, client_id: str) -> ClientKeys | None:
+    """Decrypt a client's BYOK credentials for use in THEIR request. Returns None
+    when the client has none, the key is no longer active, or BYOK is disabled."""
+    if not byok_enabled():
+        return None
+    row = await pool.fetchrow(
+        "SELECT pgp_sym_decrypt(openrouter_key_enc, $2) AS openrouter_key, "
+        "       search_provider, "
+        "       pgp_sym_decrypt(search_key_enc, $2) AS search_key "
+        "FROM api_client WHERE id=$1 AND status='active' "
+        "AND (openrouter_key_enc IS NOT NULL OR search_key_enc IS NOT NULL)",
+        client_id, settings.byok_secret,
+    )
+    if row is None:
+        return None
+    ck = ClientKeys(
+        openrouter_api_key=row["openrouter_key"],
+        search_provider=row["search_provider"],
+        search_api_key=row["search_key"],
+    )
+    return ck or None
 
 
 async def reserve(pool: asyncpg.Pool, presented_key: str) -> Reservation:
@@ -102,18 +186,30 @@ async def reserve(pool: asyncpg.Pool, presented_key: str) -> Reservation:
     )
 
 
+async def verify(pool: asyncpg.Pool, presented_key: str) -> bool:
+    """Authenticate WITHOUT metering: is this an active client key? Used for MCP
+    protocol chatter (initialize / tools/list) so handshakes don't burn quota —
+    only actual tool calls go through `reserve`."""
+    status = await pool.fetchval(
+        "SELECT status FROM api_client WHERE key_hash=$1", hash_key(presented_key)
+    )
+    return status == "active"
+
+
 async def revoke(pool: asyncpg.Pool, *, prefix: str | None = None, email: str | None = None) -> int:
     """Revoke matching active key(s) by prefix or email. Returns rows affected."""
+    # Revocation also wipes stored BYOK credentials — a revoked row must never
+    # keep decryptable third-party keys around.
+    wipe = ("status='revoked', revoked_at=now(), "
+            "openrouter_key_enc=NULL, search_provider=NULL, search_key_enc=NULL")
     if prefix:
         result = await pool.execute(
-            "UPDATE api_client SET status='revoked', revoked_at=now() "
-            "WHERE key_prefix=$1 AND status='active'",
+            f"UPDATE api_client SET {wipe} WHERE key_prefix=$1 AND status='active'",
             prefix,
         )
     elif email:
         result = await pool.execute(
-            "UPDATE api_client SET status='revoked', revoked_at=now() "
-            "WHERE lower(email)=lower($1) AND status='active'",
+            f"UPDATE api_client SET {wipe} WHERE lower(email)=lower($1) AND status='active'",
             email,
         )
     else:

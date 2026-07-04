@@ -140,6 +140,14 @@ class Settings(BaseSettings):
     # single key can't starve the pool for everyone; hits are free, only misses spend.
     client_default_rpm: int = 20
     client_default_rpd: int = 200
+    # BYOK — a client may attach their own OpenRouter / search-provider keys; their
+    # misses then spend THEIR quota, so they get much higher caps without touching
+    # the shared ceiling ("your keys, your limits"). Keys are pgcrypto-encrypted
+    # under byok_secret; unset ⇒ BYOK is disabled fail-closed (form hidden, nothing
+    # stored). Caps stay finite as an abuse backstop — hits still cost us compute.
+    byok_secret: str | None = None
+    byok_rpm: int = 60
+    byok_rpd: int = 5000
     # Admin key for the portal's operator endpoints (pause/resume registration, etc.).
     # Unset ⇒ those endpoints are disabled (fail-closed) — flip flags in the DB instead.
     admin_api_key: str | None = None

@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import citations, db, embedding, stats
 from .config import settings
+from .mcp_http import mcp_edge
 
 # Gate 1 pass line: hit rate should climb past ~30% as the corpus grows.
 _TARGET = 0.30
@@ -33,7 +34,9 @@ async def lifespan(app: FastAPI):
     # no model download.
     embedding.check_model_supported()
     await db.get_pool()
-    yield
+    # The /mcp mount needs its MCP session manager running for its lifetime.
+    async with mcp_edge.run():
+        yield
     await db.close_pool()
 
 
@@ -47,6 +50,15 @@ from .portal import router as portal_router  # noqa: E402
 
 app.include_router(gateway_router)
 app.include_router(portal_router)
+
+# Hosted MCP edge: the same search/stats tools as the stdio server, served over
+# streamable HTTP with the same metered key model as /v1 (see mcp_http.py). Lets
+# remote-MCP-capable agents use Aimnis with just this URL + a key — no install.
+# A raw ASGI Route (not a mount): clients POST to exactly /mcp, and a mount would
+# 307-redirect the bare path to /mcp/, which not every MCP client follows.
+from starlette.routing import Route  # noqa: E402
+
+app.router.routes.append(Route("/mcp", mcp_edge, methods=["GET", "POST", "DELETE"]))
 
 
 @app.get("/healthz")

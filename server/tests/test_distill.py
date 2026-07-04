@@ -27,7 +27,7 @@ def _mock_env(monkeypatch):
     monkeypatch.setattr(settings, "distill_enabled", True)
     monkeypatch.setattr(resolve, "_embed", lambda q: [0.01] * settings.embedding_dim)
 
-    async def fake_live_search(query, *, limit=None):
+    async def fake_live_search(query, *, limit=None, client_keys=None):
         return list(_RESULTS)
 
     monkeypatch.setattr(resolve, "live_search", fake_live_search)
@@ -121,7 +121,7 @@ async def test_no_key_skips_distill_entirely(clean, monkeypatch):
 async def test_empty_search_is_not_pooled(clean, monkeypatch):
     """A transient empty result set must not be cached (would serve a permanent
     'no results' on every future exact match)."""
-    async def empty(query, *, limit=None):
+    async def empty(query, *, limit=None, client_keys=None):
         return []
 
     monkeypatch.setattr(resolve, "live_search", empty)

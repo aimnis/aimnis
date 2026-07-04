@@ -48,6 +48,7 @@ at it. Either way you land on a Postgres with `vector` available.
 | `AIMNIS_EMAIL_FROM` | `Aimnis <eval@aimnis.com>` | From address; the domain must be verified in Resend. |
 | `AIMNIS_PORTAL_BASE_URL` | `https://aimnis.com` | Used in email links. |
 | `AIMNIS_CLIENT_DEFAULT_RPM` / `_RPD` | `20` / `200` | Per-issued-key caps. Keep RPD well under the shared ~1,000/day upstream ceiling so one key can't drain the pool. Optional (these are the defaults). |
+| `AIMNIS_BYOK_SECRET` | *long random string* | Enables **bring-your-own-keys**: clients may attach their own OpenRouter/search keys at registration (stored pgcrypto-encrypted under this secret); their misses then spend *their* quota and they get the higher `AIMNIS_BYOK_RPM/RPD` caps (defaults 60 / 5000). Unset ⇒ BYOK is hidden and disabled (fail-closed). Losing/rotating the secret orphans stored client keys (users just re-register). |
 
 Migrations run automatically on every deploy (`python -m aimnis.migrate`, idempotent),
 then uvicorn binds `0.0.0.0:8080` (or `$PORT` if Railway injects one).
@@ -80,8 +81,11 @@ Register that command in Claude Code / OpenCode exactly as in [`mcp.md`](mcp.md)
 only change is those two env vars.
 
 The web service serves, on one process: the public **portal** at `/` (landing +
-self-serve eval-key registration + terms + waitlist), the **flywheel dashboard** at
-`/flywheel`, and the **gateway** at `/v1/*`.
+self-serve eval-key registration + terms + waitlist + `/setup` per-agent guides),
+the **flywheel dashboard** at `/flywheel`, the REST **gateway** at `/v1/*`, and a
+hosted **MCP endpoint** at `/mcp` (streamable HTTP, same keys/metering as `/v1` —
+remote-MCP-capable agents connect with just the URL + an `Authorization` header,
+no local install; see [`mcp.md`](mcp.md)).
 
 ## 4. Self-serve eval portal (aimnis.com)
 

@@ -40,7 +40,7 @@ def _embed(query: str) -> list[float]:
 
 
 async def _distill(db: asyncpg.Pool, query: str, h: str, results: list[dict], *,
-                   purpose: str | None = None):
+                   purpose: str | None = None, client_keys=None):
     """Distill snippets into a grounded answer, spending quota via the ledger.
 
     Returns a DistillResult on success, or None when distillation is
@@ -48,11 +48,29 @@ async def _distill(db: asyncpg.Pool, query: str, h: str, results: list[dict], *,
     `quota.QuotaExceeded` when the reservation is DENIED (so a background batch can
     stop; the interactive caller catches it and degrades to snippets). Every
     granted call is finalized with its real ledger status so a 429/timeout counts.
+
+    BYOK: with a client-supplied OpenRouter key (client_keys.openrouter_api_key),
+    the call runs on THEIR key and quota — no ledger reservation (the ledger meters
+    the service's keys; OpenRouter enforces theirs) and, deliberately, NO fallback
+    to the service key on failure: a BYOK client's (much higher) miss volume must
+    never drain the shared distill budget. Their failure degrades to snippets. The
+    model chain is still the service's vetted distill_models — per-model compliance
+    flags stay meaningful regardless of whose key paid for the call.
     """
-    if not (settings.distill_enabled and settings.openrouter_api_key and results):
+    if not (settings.distill_enabled and results):
         return None
 
     from . import llm  # lazy: keeps httpx-based LLM path out of the import graph until used
+
+    byok_key = client_keys.openrouter_api_key if client_keys else None
+    if byok_key:
+        try:
+            return await llm.distill(query, results, api_key=byok_key)
+        except llm.LLMError:  # incl. rate-limited/timeout — degrade to snippets
+            return None
+
+    if not settings.openrouter_api_key:
+        return None
 
     primary = settings.distill_models[0] if settings.distill_models else None
     res = await quota.reserve(
@@ -140,12 +158,13 @@ _NO_DISTILL = DistillScored(None, None, None, (), False, False)
 async def _distill_and_score(
     db: asyncpg.Pool, query: str, h: str, results: list[dict], *,
     purpose: str | None = None, judge_enabled: bool = False,
-    judge_purpose: str | None = None,
+    judge_purpose: str | None = None, client_keys=None,
 ) -> DistillScored:
     """Distill + quality-gate (+ optional judge). Shared by the interactive path
     and the background refresh queue. May raise quota.QuotaExceeded (from _distill)
     when the reservation is denied — callers decide whether to degrade or stop."""
-    distilled = await _distill(db, query, h, results, purpose=purpose)
+    distilled = await _distill(db, query, h, results, purpose=purpose,
+                               client_keys=client_keys)
     if distilled is None:
         return _NO_DISTILL
 
@@ -206,7 +225,13 @@ async def _cache_lookup(
     return None, best_score, best.distance
 
 
-async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = None) -> dict:
+async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = None,
+                         client_keys=None) -> dict:
+    # BYOK: `client_keys` (apikeys.ClientKeys) carries the calling client's own
+    # upstream credentials. Their misses spend their quota (search + distill);
+    # everything else — cache lookup, scrubbing, pooling — is identical. Used only
+    # for THIS request, never for other users' queries (ToS invariant).
+    #
     # Scrub FIRST: secrets/PII must never reach a third party (Brave/OpenRouter)
     # or the pool. Everything downstream uses the redacted text; a secret-dense
     # query is served live-only (safe_to_pool=False) and never persisted.
@@ -257,7 +282,8 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
 
     try:
         # Fetch WIDE (search_fetch_limit) so the selector has a candidate pool.
-        results = [asdict(r) for r in await live_search(query, limit=settings.search_fetch_limit)]
+        results = [asdict(r) for r in await live_search(
+            query, limit=settings.search_fetch_limit, client_keys=client_keys)]
     except SearchError as exc:
         await stats.record_event(db, query_hash=h, outcome="error", niche=niche)
         return {"source": "error", "error": str(exc), "results": []}
@@ -299,6 +325,7 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
             purpose=settings.distill_purpose,
             judge_enabled=settings.quality_judge_enabled,
             judge_purpose=settings.quality_judge_purpose,
+            client_keys=client_keys,
         )
     except quota.QuotaExceeded:
         scored = _NO_DISTILL
@@ -310,6 +337,18 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
 
     model = answer_model if answer else "searxng-live"
     flags = models.compliance_for(model) if answer else {}
+
+    # ToS-taint tracking: entries produced under BYOK credentials are provenance-
+    # tagged so a later per-provider ToS finding can filter or purge them — the
+    # corpus never carries anonymous license taint. byok_search is conservatively
+    # set whenever the client HAD a search key (the service chain may have served
+    # as fallback; over-tagging errs on the purgeable side).
+    byok_prov = {}
+    if client_keys is not None:
+        if client_keys.search_provider and client_keys.search_api_key:
+            byok_prov["byok_search"] = client_keys.search_provider
+        if client_keys.openrouter_api_key and answer:
+            byok_prov["byok_distill"] = True
 
     # Secret-dense queries are served live-only and never persisted (redaction may
     # be incomplete, and such a query is unlikely to be reusable knowledge).
@@ -325,7 +364,7 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
             sources=results,
             model=model,
             provenance={"source": "searxng-live", "distilled": bool(answer),
-                        "quality_flags": list(quality_flags)},
+                        "quality_flags": list(quality_flags), **byok_prov},
             status="active",
             niche=niche,
             quality_score=quality_score,
