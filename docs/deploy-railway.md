@@ -46,7 +46,7 @@ at it. Either way you land on a Postgres with `vector` available.
 | `AIMNIS_ADMIN_API_KEY` | *your key* | Guards the operator endpoint `POST /admin/registration` (pause/resume eval intake). Unset ⇒ that endpoint is disabled (404); you can still flip the flag directly in the DB. |
 | `AIMNIS_RESEND_API_KEY` | *your key* | Transactional email (issued-key delivery + waitlist). When set, issued keys are delivered **only by email** (a working inbox is the anti-farming gate; a failed send revokes the key). Omit → email is a logged no-op and the key is shown once on-screen (dev / self-host). See **Email deliverability** below. |
 | `AIMNIS_PORTAL_IP_HOURLY` | `5` | Max portal form submissions (`/register` + `/waitlist`) per client IP per hour. Optional (default shown). |
-| `AIMNIS_EMAIL_FROM` | `Aimnis <eval@aimnis.com>` | From address; the domain must be verified in Resend. |
+| `AIMNIS_EMAIL_FROM` | `Aimnis <support@aimnis.com>` | From address; the domain must be verified in Resend. Use a mailbox you actually monitor — registrants reply here. |
 | `AIMNIS_PORTAL_BASE_URL` | `https://aimnis.com` | Used in email links. |
 | `AIMNIS_CLIENT_DEFAULT_RPM` / `_RPD` | `20` / `200` | Per-issued-key caps. Keep RPD well under the shared ~1,000/day upstream ceiling so one key can't drain the pool. Optional (these are the defaults). |
 | `AIMNIS_BYOK_SECRET` | *long random string* | Enables **bring-your-own-keys**: clients may attach their own OpenRouter/search keys at registration (stored pgcrypto-encrypted under this secret); their misses then spend *their* quota and they get the higher `AIMNIS_BYOK_RPM/RPD` caps (defaults 60 / 5000). Unset ⇒ BYOK is hidden and disabled (fail-closed). Losing/rotating the secret orphans stored client keys (users just re-register). |
@@ -119,7 +119,7 @@ ranges, so it lands in spam. Use **Resend** (HTTP API) with domain authenticatio
 2. Add the **DKIM + SPF (+ optionally DMARC)** DNS records Resend prints to `aimnis.com`'s
    DNS. This is what "spam clearance" actually is — it authenticates your mail so inboxes
    trust it. Wait for Resend to show the domain **Verified**.
-3. Set `AIMNIS_RESEND_API_KEY` (and `AIMNIS_EMAIL_FROM=Aimnis <eval@aimnis.com>`) in Railway.
+3. Set `AIMNIS_RESEND_API_KEY` (and `AIMNIS_EMAIL_FROM=Aimnis <support@aimnis.com>`) in Railway.
 
 Free tier (3k emails/mo, 100/day) covers an eval preview. Without the key the portal still
 works — it just shows the key on-screen instead of emailing it.

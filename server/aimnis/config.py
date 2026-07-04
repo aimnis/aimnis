@@ -159,7 +159,7 @@ class Settings(BaseSettings):
     # no key set, email is a logged no-op so the portal still works in dev / self-host.
     resend_api_key: str | None = None
     resend_endpoint: str = "https://api.resend.com/emails"
-    email_from: str = "Aimnis <eval@aimnis.com>"
+    email_from: str = "Aimnis <support@aimnis.com>"
     # Anti-abuse: max portal form submissions (/register, /waitlist) per client IP
     # per hour. In-process counter — sufficient for a single-instance deploy.
     portal_ip_hourly: int = 5
