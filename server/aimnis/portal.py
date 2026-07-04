@@ -8,6 +8,8 @@ Routes:
     GET  /                     landing — what Aimnis is + why
     GET  /setup                per-agent setup instructions (hosted MCP endpoint + REST)
     GET  /llms.txt             plain-text summary for LLM/agent crawlers
+    GET  /.well-known/api-catalog  RFC 9727 linkset of machine-usable endpoints
+                               (advertised via an RFC 8288 Link header on /)
     GET  /terms                terms of use
     GET  /register             registration form (or "at capacity" + waitlist if paused)
     POST /register             issue a key (open) → email it (email-only in prod); else waitlist
@@ -164,6 +166,46 @@ Server card: {base}/.well-known/mcp/server-card.json
 - [Source](https://github.com/aimnis/aimnis): AGPLv3 server, Apache-2.0 clients
 """
     return Response(body, media_type="text/plain; charset=utf-8",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+# RFC 8288 Link header advertised on the homepage so agents can discover the
+# machine-readable surfaces without scraping HTML. Relative refs resolve against
+# the request URI per the RFC. The rels are IANA-registered: api-catalog
+# (RFC 9727), service-desc (the MCP server card describes the service),
+# service-doc (human/agent-readable setup docs), describedby (llms.txt summary).
+_DISCOVERY_LINKS = (
+    '</.well-known/api-catalog>; rel="api-catalog", '
+    '</.well-known/mcp/server-card.json>; rel="service-desc", '
+    '</setup>; rel="service-doc", '
+    '</llms.txt>; rel="describedby"'
+)
+
+
+@router.get("/.well-known/api-catalog")
+async def api_catalog() -> Response:
+    """RFC 9727 API catalog: a linkset enumerating the machine-usable endpoints
+    (hosted MCP, REST gateway, public stats) and where each is described."""
+    import json
+
+    base = settings.portal_base_url.rstrip("/")
+    linkset = {"linkset": [
+        {
+            "anchor": f"{base}/mcp",
+            "service-desc": [{"href": f"{base}/.well-known/mcp/server-card.json",
+                              "type": "application/json"}],
+            "service-doc": [{"href": f"{base}/setup", "type": "text/html"}],
+        },
+        {
+            "anchor": f"{base}/v1/search",
+            "service-doc": [{"href": f"{base}/setup", "type": "text/html"}],
+        },
+        {
+            "anchor": f"{base}/api/stats",
+            "service-doc": [{"href": f"{base}/flywheel", "type": "text/html"}],
+        },
+    ]}
+    return Response(json.dumps(linkset), media_type="application/linkset+json",
                     headers={"Cache-Control": "public, max-age=86400"})
 
 
@@ -339,7 +381,8 @@ async def landing() -> HTMLResponse:
   <p class="muted">By requesting a key you agree to the <a href="/terms">Terms of Use</a>.
   Operators reserve the right to revoke any key at any time.</p>
 """
-    return HTMLResponse(_page("Aimnis · Collaborative Search for Agents", body, wide=True))
+    return HTMLResponse(_page("Aimnis · Collaborative Search for Agents", body, wide=True),
+                        headers={"Link": _DISCOVERY_LINKS})
 
 
 # --------------------------------------------------------------------------- #

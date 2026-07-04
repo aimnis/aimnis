@@ -336,3 +336,19 @@ async def test_landing_renders_without_db(clean, monkeypatch):
         home = await c.get("/")
     assert home.status_code == 200
     assert "Collaborative search" in home.text
+
+
+async def test_homepage_link_header_and_api_catalog(clean, monkeypatch):
+    async with _client(clean, monkeypatch) as c:
+        home = await c.get("/")
+        catalog = await c.get("/.well-known/api-catalog")
+    # RFC 8288 discovery header on the homepage, pointing at real resources.
+    link = home.headers.get("link", "")
+    assert 'rel="api-catalog"' in link and "/.well-known/api-catalog" in link
+    assert 'rel="service-desc"' in link and "server-card.json" in link
+    # RFC 9727 linkset: correct media type, anchors cover the MCP + REST endpoints.
+    assert catalog.status_code == 200
+    assert catalog.headers["content-type"].startswith("application/linkset+json")
+    anchors = [e["anchor"] for e in catalog.json()["linkset"]]
+    assert any(a.endswith("/mcp") for a in anchors)
+    assert any(a.endswith("/v1/search") for a in anchors)
