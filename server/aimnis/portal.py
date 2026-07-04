@@ -26,7 +26,7 @@ import re
 import time
 
 from fastapi import APIRouter, Form, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from . import apikeys, db, email as email_mod, flags
 from .config import settings
@@ -86,6 +86,41 @@ def _too_many(title: str) -> HTMLResponse:
 # --------------------------------------------------------------------------- #
 # Shared rendering
 # --------------------------------------------------------------------------- #
+# Brand mark (assets/brand/aimnis-icon.svg, embedded so the portal stays
+# single-process with no static-file mount): ripple-lens magnifier.
+_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<defs>
+<radialGradient id="bg" cx="38%" cy="32%" r="90%">
+<stop offset="0%" stop-color="#131c29"/><stop offset="100%" stop-color="#0b0f14"/>
+</radialGradient>
+<linearGradient id="mark" x1="0%" y1="0%" x2="100%" y2="100%">
+<stop offset="0%" stop-color="#2dd4bf"/><stop offset="100%" stop-color="#58a6ff"/>
+</linearGradient>
+</defs>
+<rect width="512" height="512" rx="114" fill="url(#bg)"/>
+<g fill="none" stroke="url(#mark)">
+<circle cx="226" cy="226" r="120" stroke-width="30"/>
+<circle cx="226" cy="226" r="74" stroke-width="14" opacity="0.6"
+ stroke-linecap="round" stroke-dasharray="330 135" transform="rotate(-35 226 226)"/>
+<circle cx="226" cy="226" r="38" stroke-width="12" opacity="0.85"
+ stroke-linecap="round" stroke-dasharray="175 65" transform="rotate(115 226 226)"/>
+</g>
+<circle cx="226" cy="226" r="14" fill="#2dd4bf"/>
+<line x1="318" y1="318" x2="404" y2="404" stroke="url(#mark)"
+ stroke-width="44" stroke-linecap="round"/>
+</svg>"""
+
+FAVICON_LINK = '<link rel="icon" href="/favicon.svg" type="image/svg+xml">'
+
+
+@router.get("/favicon.svg")
+@router.get("/favicon.ico")  # browsers probe this path unprompted; SVG works there too
+async def favicon() -> Response:
+    return Response(
+        _FAVICON_SVG,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 _STYLE = """
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -131,6 +166,7 @@ def _page(title: str, body: str) -> str:
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)}</title>
+{FAVICON_LINK}
 <style>{_STYLE}</style></head>
 <body><div class="wrap">{body}
 <footer><nav><a href="/">Home</a><a href="/register">Get a key</a>

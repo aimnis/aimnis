@@ -208,6 +208,17 @@ async def test_waitlist_dedupes_email(clean, monkeypatch):
     assert await clean.fetchval("SELECT count(*) FROM waitlist") == 1
 
 
+async def test_favicon_served_and_linked(clean, monkeypatch):
+    async with _client(clean, monkeypatch) as c:
+        svg = await c.get("/favicon.svg")
+        ico = await c.get("/favicon.ico")
+        home = await c.get("/")
+        fly = await c.get("/flywheel")
+    assert svg.status_code == 200 and svg.headers["content-type"].startswith("image/svg")
+    assert "<svg" in svg.text and ico.text == svg.text
+    assert 'rel="icon"' in home.text and 'rel="icon"' in fly.text
+
+
 async def test_glama_wellknown(clean, monkeypatch):
     monkeypatch.setattr(settings, "email_from", "Aimnis <support@aimnis.com>")
     async with _client(clean, monkeypatch) as c:

@@ -46,7 +46,7 @@ app = FastAPI(title="Aimnis Flywheel", lifespan=lifespan)
 # (landing, self-serve eval-key registration, terms, waitlist). Same process as the
 # dashboard so the hosted deploy is a single web service.
 from .gateway import router as gateway_router  # noqa: E402
-from .portal import router as portal_router  # noqa: E402
+from .portal import FAVICON_LINK, router as portal_router  # noqa: E402
 
 app.include_router(gateway_router)
 app.include_router(portal_router)
@@ -207,6 +207,7 @@ def _render_page(s, series: list, clicks, storage, asof: str) -> str:
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Aimnis · Flywheel</title>
+{FAVICON_LINK}
 <style>
   :root {{ color-scheme: dark; }}
   * {{ box-sizing: border-box; }}
