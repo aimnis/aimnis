@@ -264,6 +264,19 @@ def _render_page(s, series: list, satisfaction, storage, asof: str) -> str:
 </div></body></html>"""
 
 
+# Crawlers and agent-readiness scanners often probe with HEAD, but FastAPI
+# registers @get routes as GET-only (HEAD → 405). Allow HEAD wherever GET is
+# served — same headers (including the discovery Link header on `/`), body
+# suppressed by the server. Included routers are not flattened into app.routes,
+# so their route lists are patched directly (same live objects the app dispatches
+# to). The raw /mcp Route is a plain Starlette Route, not an APIRoute — untouched.
+from fastapi.routing import APIRoute  # noqa: E402
+
+for _route in (*app.routes, *gateway_router.routes, *portal_router.routes):
+    if isinstance(_route, APIRoute) and "GET" in _route.methods:
+        _route.methods.add("HEAD")
+
+
 def main() -> None:
     import uvicorn
     uvicorn.run("aimnis.api:app", host=settings.dashboard_host, port=settings.dashboard_port)

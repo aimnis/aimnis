@@ -352,3 +352,14 @@ async def test_homepage_link_header_and_api_catalog(clean, monkeypatch):
     anchors = [e["anchor"] for e in catalog.json()["linkset"]]
     assert any(a.endswith("/mcp") for a in anchors)
     assert any(a.endswith("/v1/search") for a in anchors)
+
+
+async def test_head_requests_are_answered(clean, monkeypatch):
+    # Crawlers and agent-readiness scanners probe with HEAD; every GET route must
+    # answer it (api.py adds HEAD app-wide) with the same headers and no body.
+    async with _client(clean, monkeypatch) as c:
+        home = await c.head("/")
+        catalog = await c.head("/.well-known/api-catalog")
+    assert home.status_code == 200
+    assert 'rel="api-catalog"' in home.headers.get("link", "")
+    assert catalog.status_code == 200
