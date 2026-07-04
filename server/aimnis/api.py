@@ -71,7 +71,10 @@ from .gateway import router as gateway_router  # noqa: E402
 from .portal import FAVICON_LINK, router as portal_router  # noqa: E402
 
 app.include_router(gateway_router)
-app.include_router(portal_router)
+# The portal (landing, register, terms, admin, favicons, well-known files, …) is the
+# hosted site, not the public API. Keep those routes serving but out of the OpenAPI
+# spec so /docs is a clean reference for the two intended endpoints: /v1/search + /v1/stats.
+app.include_router(portal_router, include_in_schema=False)
 
 # Hosted MCP edge: the same search/stats tools as the stdio server, served over
 # streamable HTTP with the same metered key model as /v1 (see mcp_http.py). Lets
@@ -83,12 +86,12 @@ from starlette.routing import Route  # noqa: E402
 app.router.routes.append(Route("/mcp", mcp_edge, methods=["GET", "POST", "DELETE"]))
 
 
-@app.get("/healthz")
+@app.get("/healthz", include_in_schema=False)
 async def healthz():
     return {"ok": True}
 
 
-@app.get("/r/{token}")
+@app.get("/r/{token}", include_in_schema=False)
 async def redirect_citation(token: str):
     """Signed citation redirect: log the click (aggregate signal) and 302 to the
     stored destination. A forged/expired/out-of-range token 404s rather than
@@ -101,7 +104,7 @@ async def redirect_citation(token: str):
     return RedirectResponse(url, status_code=302)
 
 
-@app.get("/api/stats")
+@app.get("/api/stats", include_in_schema=False)
 async def api_stats():
     """PUBLIC metrics — aggregates only. The raw query text (`top_queries`) and the
     per-host / per-entry click detail are withheld here and served only from the
@@ -133,7 +136,7 @@ async def api_stats():
     })
 
 
-@app.get("/flywheel", response_class=HTMLResponse)
+@app.get("/flywheel", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard():
     pool = await db.get_pool()
     s = await stats.gather(pool)
@@ -318,9 +321,15 @@ async def _markdown_for_agents(request, call_next):
 # suppressed by the server. Included routers are not flattened into app.routes,
 # so their route lists are patched directly (same live objects the app dispatches
 # to). The raw /mcp Route is a plain Starlette Route, not an APIRoute — untouched.
+#
+# The /v1/* gateway is deliberately excluded: HEAD-probing is a discovery concern
+# for the public HTML + .well-known surface, not the authenticated JSON API. It
+# also keeps the API clean in OpenAPI — FastAPI derives one method-independent
+# operationId per route but renders an operation per method, so a GET+HEAD route
+# would emit a duplicate operationId (and a phantom HEAD operation in /docs).
 from fastapi.routing import APIRoute  # noqa: E402
 
-for _route in (*app.routes, *gateway_router.routes, *portal_router.routes):
+for _route in (*app.routes, *portal_router.routes):
     if isinstance(_route, APIRoute) and "GET" in _route.methods:
         _route.methods.add("HEAD")
 
