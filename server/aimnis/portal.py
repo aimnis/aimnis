@@ -247,39 +247,36 @@ async def landing() -> HTMLResponse:
   <h1>Aimnis</h1>
   <p class="tag">Collaborative search for agents. Search once, answer everyone.</p>
 
-  <p>Aimnis is a <b>cache-first knowledge gateway</b> for AI agents. Every question an agent
-  asks is answered from a <b>shared, continuously-growing pool</b> of distilled, cited answers.
-  When a question is new, Aimnis runs a live web search, distills a cited answer, and adds it to
-  the pool — so the <i>next</i> agent that asks anything similar gets it instantly, for free.</p>
+  <p>Your coding agent keeps re-searching the same things — the new library version, the same
+  error message, the same API change — and you wait and pay every time. <b>Aimnis gives your
+  agent a shared memory of the web.</b> Anything that anyone's agent has asked before comes back
+  instantly, with sources. New questions are answered live once — then they're instant for
+  everyone after, including you.</p>
 
-  <h2>How it works</h2>
-  <ol>
-    <li>Your agent asks a question through the Aimnis MCP tool or REST endpoint.</li>
-    <li><b>Cache hit</b> (exact or semantic) → an instant, cited answer from the pool.</li>
-    <li><b>Miss</b> → live search → distilled, source-cited answer → added to the pool.</li>
-    <li>The pool compounds: the more it's used, the more it already knows.</li>
-  </ol>
-
-  <h2>Why it's different</h2>
+  <h2>What you get</h2>
   <ul>
-    <li><b>A continuous-learning layer</b>, not a per-vendor search bolt-on — one shared corpus
-        across agents that captures what happened after any model's training cutoff.</li>
-    <li><b>Cheaper and faster</b> than hitting a live web-search API on every query — the live
-        cost is paid once per new question, then the cached answer serves everyone.</li>
-    <li><b>Honest provenance</b>: every answer is labeled AI-generated and carries its sources and
-        freshness, so your agent can decide when to escalate to a live search.</li>
-    <li><b>Bring your own keys (optional)</b>: attach your own OpenRouter / search-provider keys
-        at registration and your misses run on <i>your</i> quota — far higher daily limits, and
-        every query you make still grows the shared pool.</li>
+    <li><b>Faster sessions</b> — known questions come back in milliseconds instead of a full
+        web search, so your agent spends its time coding, not searching.</li>
+    <li><b>Lower cost</b> — the expensive part (live search) runs only on genuinely new
+        questions. Nobody pays for the same answer twice.</li>
+    <li><b>Answers you can check</b> — every answer shows its sources and its age, so you and
+        your agent can tell where it came from and how fresh it is.</li>
+    <li><b>Better every day</b> — every question anyone asks becomes an instant answer for you.
+        You benefit from every other user, and they benefit from you.</li>
   </ul>
 
   <div class="card">
-    <p style="margin:0 0 14px"><b>Try it.</b> Grab an evaluation API key and point your coding
-    agent at the hosted MCP endpoint — nothing to install.</p>
+    <p style="margin:0 0 14px"><b>Try it free.</b> Eval key by email, no card. Your agent
+    connects with just a URL and the key — nothing to install, set up in two minutes.</p>
     <a class="btn" href="/register">Get an eval API key</a>
     <a class="btn secondary" href="/setup">Agent setup</a>
     <a class="btn secondary" href="/flywheel">See the live flywheel</a>
   </div>
+
+  <p class="muted">Skeptical? Good. The make-or-break number — how often the shared memory
+  answers without a live search — is published live on the
+  <a href="/flywheel">flywheel dashboard</a>. Power users can attach their own search/model
+  keys at registration for much higher daily limits.</p>
 
   <p class="muted">Works with any MCP-capable agent — setup guides for
   <a href="/setup#opencode">OpenCode</a>, <a href="/setup#openclaw">OpenClaw</a>,
