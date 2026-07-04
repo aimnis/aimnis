@@ -9,7 +9,7 @@ Routes:
     GET  /setup                per-agent setup instructions (hosted MCP endpoint + REST)
     GET  /terms                terms of use
     GET  /register             registration form (or "at capacity" + waitlist if paused)
-    POST /register             issue a key (open) → show it once + email it; else waitlist
+    POST /register             issue a key (open) → email it (email-only in prod); else waitlist
     POST /waitlist             capture an email for capacity notifications
     POST /admin/registration   operator pause/resume toggle (X-Admin-Key)
 
@@ -23,6 +23,7 @@ from __future__ import annotations
 import hmac
 import html
 import re
+import time
 
 from fastapi import APIRouter, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -37,6 +38,49 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 def _valid_email(e: str) -> bool:
     return bool(e) and len(e) <= 254 and _EMAIL_RE.match(e) is not None
+
+
+# --------------------------------------------------------------------------- #
+# Per-IP form throttle (anti key-farming)
+# --------------------------------------------------------------------------- #
+# Keys are handed out self-serve, so the scarce thing to protect is upstream
+# quota: without this, a script minting keys with throwaway emails multiplies
+# the per-key caps arbitrarily. In-process state — fine for one instance.
+_form_hits: dict[str, list[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    # Railway terminates TLS at its proxy; the client is the first hop of
+    # X-Forwarded-For. Fall back to the socket peer for dev / direct access.
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _throttled(request: Request) -> bool:
+    """True if this IP has exceeded the hourly form budget (and record the hit)."""
+    now = time.monotonic()
+    ip = _client_ip(request)
+    hits = [t for t in _form_hits.get(ip, []) if now - t < 3600]
+    if len(hits) >= settings.portal_ip_hourly:
+        _form_hits[ip] = hits
+        return True
+    hits.append(now)
+    _form_hits[ip] = hits
+    if len(_form_hits) > 10_000:  # bound memory under address-spread abuse
+        _form_hits.clear()
+    return False
+
+
+def _too_many(title: str) -> HTMLResponse:
+    body = """
+  <h1>Too many requests</h1>
+  <p class="tag">Please slow down.</p>
+  <p>We've seen several submissions from your network in the last hour. Try again later —
+  or if you're behind a shared corporate NAT, reply to any Aimnis email and we'll sort you out.</p>
+"""
+    return HTMLResponse(_page(title, body), status_code=429)
 
 
 # --------------------------------------------------------------------------- #
@@ -411,7 +455,7 @@ def _register_form(error: str = "", email: str = "") -> str:
     err = f'<p class="err">{html.escape(error)}</p>' if error else ""
     return f"""
   <h1>Get an eval API key</h1>
-  <p class="tag">Instant, self-serve. One active key per email.</p>
+  <p class="tag">Self-serve — your key arrives by email. One active key per email.</p>
   {err}
   <form method="post" action="/register" class="card">
     <label for="email">Email</label>
@@ -453,7 +497,39 @@ async def register_form() -> HTMLResponse:
     return HTMLResponse(_page("Aimnis · Get an eval key", _register_form()))
 
 
+def _key_sent_page(issued: apikeys.IssuedKey) -> str:
+    """Production success page: the key travels ONLY by email (possession of the
+    inbox is the gate — on-screen delivery would make throwaway-email key farming
+    trivial). Shows the prefix so the user can match it to the email."""
+    return f"""
+  <h1>Check your email</h1>
+  <div class="card">
+    <p style="margin:0">Your eval API key (<code>{html.escape(issued.prefix)}…</code>) was sent to
+    <b>{html.escape(issued.email or "you")}</b>. It's only ever delivered by email — if it
+    doesn't arrive within a few minutes, check spam, then re-register to rotate a fresh key.</p>
+  </div>
+  <h2>While you wait</h2>
+  <p><a class="btn" href="/setup">Per-agent setup — OpenCode, OpenClaw, Hermes, Pi, Claude Code</a></p>
+  <p class="muted">Limits: {issued.rpm_limit} requests/min, {issued.rpd_limit:,} requests/day.{
+    " Your own keys are attached — misses run on your quota; keys are stored encrypted,"
+    " used only for your requests, and wiped on revoke/rotate." if issued.byok else ""}
+  The key is revocable at any time — see the <a href="/terms">Terms</a>.</p>
+"""
+
+
+def _email_failed_page(email_addr: str) -> str:
+    return f"""
+  <h1>We couldn't send your key</h1>
+  <p class="tag">Nothing was issued.</p>
+  <p>Delivering your key to <b>{html.escape(email_addr)}</b> failed, so the key was discarded
+  (keys are only ever delivered by email). Please try again in a few minutes.</p>
+  <p><a class="btn" href="/register">Try again</a></p>
+"""
+
+
 def _key_issued_page(request: Request, issued: apikeys.IssuedKey) -> str:
+    """Dev / self-host success page (no email provider configured): the key is
+    shown once on-screen. Production always takes the email-only path."""
     gateway_url = str(request.base_url).rstrip("/")
     return f"""
   <h1>Your eval API key</h1>
@@ -461,7 +537,6 @@ def _key_issued_page(request: Request, issued: apikeys.IssuedKey) -> str:
     <p style="margin:0 0 8px"><b>Copy it now — it's shown once and never again.</b></p>
     <p class="key">{html.escape(issued.key)}</p>
   </div>
-  <p>We've also emailed it to {html.escape(issued.email or "you")}.</p>
 
   <h2>Point your agent at Aimnis</h2>
   <p>Aimnis is a hosted MCP server — nothing to install. Add it to your agent:</p>
@@ -509,6 +584,9 @@ async def register_submit(
     search_key: str = Form(default=""),
     byok_ack: str = Form(default=""),
 ) -> HTMLResponse:
+    if _throttled(request):
+        return _too_many("Aimnis · Too many requests")
+
     pool = await db.get_pool()
     email = email.strip()
 
@@ -545,18 +623,31 @@ async def register_submit(
     label = use_case.strip()[:500] or None
     issued = await apikeys.issue(pool, email=email, label=label, client_keys=client_keys)
 
+    # No email provider configured (dev / self-host): show the key once on-screen.
+    if not settings.resend_api_key:
+        return HTMLResponse(_page("Aimnis · Your eval key", _key_issued_page(request, issued)))
+
+    # Production: the key is delivered ONLY by email — a working inbox is the
+    # anti-farming gate. If the send fails, revoke so no orphan key floats around.
     gateway_url = str(request.base_url).rstrip("/")
-    await email_mod.send_email(
+    sent = await email_mod.send_email(
         email, "Your Aimnis eval API key", _key_email_html(issued, gateway_url)
     )
-    return HTMLResponse(_page("Aimnis · Your eval key", _key_issued_page(request, issued)))
+    if not sent:
+        await apikeys.revoke(pool, email=email)
+        return HTMLResponse(
+            _page("Aimnis · Delivery failed", _email_failed_page(email)), status_code=502
+        )
+    return HTMLResponse(_page("Aimnis · Check your email", _key_sent_page(issued)))
 
 
 # --------------------------------------------------------------------------- #
 # Waitlist
 # --------------------------------------------------------------------------- #
 @router.post("/waitlist", response_class=HTMLResponse)
-async def waitlist_submit(email: str = Form(...)) -> HTMLResponse:
+async def waitlist_submit(request: Request, email: str = Form(...)) -> HTMLResponse:
+    if _throttled(request):
+        return _too_many("Aimnis · Too many requests")
     pool = await db.get_pool()
     email = email.strip()
     if not _valid_email(email):

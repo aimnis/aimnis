@@ -4,9 +4,18 @@ issued key authenticates through the gateway. Drives the ASGI app in-process."""
 from __future__ import annotations
 
 import httpx
+import pytest
 
-from aimnis import api, apikeys, db, flags, resolve
+from aimnis import api, apikeys, db, email as email_mod, flags, portal, resolve
 from aimnis.config import settings
+
+
+@pytest.fixture(autouse=True)
+def _fresh_throttle():
+    # The per-IP form throttle is in-process state; every test starts clean.
+    portal._form_hits.clear()
+    yield
+    portal._form_hits.clear()
 
 
 def _client(pool, monkeypatch) -> httpx.AsyncClient:
@@ -52,12 +61,69 @@ async def test_register_issues_key_and_persists_active_client(clean, monkeypatch
         r = await c.post("/register", data={"email": "user@example.com", "use_case": "cli"})
     assert r.status_code == 200
     assert "Your eval API key" in r.text
-    assert "aim_" in r.text  # the key is shown once
+    assert "aim_" in r.text  # dev/self-host (no email provider): shown once on-screen
 
     row = await clean.fetchrow(
         "SELECT status, label FROM api_client WHERE lower(email)='user@example.com'"
     )
     assert row["status"] == "active" and row["label"] == "cli"
+
+
+async def test_register_email_only_in_production(clean, monkeypatch):
+    # With an email provider configured, the key travels ONLY by email — the page
+    # must not contain it (on-screen delivery would enable throwaway-email farming).
+    monkeypatch.setattr(settings, "resend_api_key", "re_test")
+    sent: dict = {}
+
+    async def fake_send(to, subject, html):
+        sent.update(to=to, subject=subject, html=html)
+        return True
+    monkeypatch.setattr(email_mod, "send_email", fake_send)
+
+    async with _client(clean, monkeypatch) as c:
+        r = await c.post("/register", data={"email": "prod@example.com"})
+    assert r.status_code == 200
+    assert "Check your email" in r.text
+    import re
+    key = re.search(r"aim_[A-Za-z0-9_-]{20,}", sent["html"]).group(0)
+    assert key not in r.text  # the full key never appears on-page (prefix hint is fine)
+    assert sent["to"] == "prod@example.com"
+    assert await clean.fetchval(
+        "SELECT count(*) FROM api_client WHERE lower(email)='prod@example.com' "
+        "AND status='active'"
+    ) == 1
+
+
+async def test_register_send_failure_revokes_key(clean, monkeypatch):
+    monkeypatch.setattr(settings, "resend_api_key", "re_test")
+
+    async def failing_send(to, subject, html):
+        return False
+    monkeypatch.setattr(email_mod, "send_email", failing_send)
+
+    async with _client(clean, monkeypatch) as c:
+        r = await c.post("/register", data={"email": "lost@example.com"})
+    assert r.status_code == 502 and "couldn't send" in r.text.lower()
+    # The undeliverable key must not remain usable.
+    assert await clean.fetchval(
+        "SELECT count(*) FROM api_client WHERE lower(email)='lost@example.com' "
+        "AND status='active'"
+    ) == 0
+
+
+async def test_register_per_ip_throttle(clean, monkeypatch):
+    monkeypatch.setattr(settings, "portal_ip_hourly", 2)
+    async with _client(clean, monkeypatch) as c:
+        first = await c.post("/register", data={"email": "t1@example.com"})
+        second = await c.post("/register", data={"email": "t2@example.com"})
+        third = await c.post("/register", data={"email": "t3@example.com"})
+        wl = await c.post("/waitlist", data={"email": "t4@example.com"})  # shared budget
+    assert first.status_code == 200 and second.status_code == 200
+    assert third.status_code == 429 and "slow down" in third.text.lower()
+    assert wl.status_code == 429
+    assert await clean.fetchval(
+        "SELECT count(*) FROM api_client WHERE lower(email)='t3@example.com'"
+    ) == 0
 
 
 async def test_register_rejects_bad_email(clean, monkeypatch):

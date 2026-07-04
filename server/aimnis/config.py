@@ -160,6 +160,9 @@ class Settings(BaseSettings):
     resend_api_key: str | None = None
     resend_endpoint: str = "https://api.resend.com/emails"
     email_from: str = "Aimnis <eval@aimnis.com>"
+    # Anti-abuse: max portal form submissions (/register, /waitlist) per client IP
+    # per hour. In-process counter — sufficient for a single-instance deploy.
+    portal_ip_hourly: int = 5
 
     # Citation routing — cited source links can be routed through a signed
     # /r/<token> redirect that logs a click (aggregate relevance signal: which

@@ -44,7 +44,8 @@ at it. Either way you land on a Postgres with `vector` available.
 | `AIMNIS_OPENROUTER_API_KEY` | *your key* | Distillation. Omit → raw cited snippets, zero upstream spend. |
 | `AIMNIS_GATEWAY_API_KEYS` | `key1,key2` | **Admin/bootstrap keys** (unlimited, unmetered) — comma-separated. This is *your* operator key. Self-serve eval keys are issued by the portal into the DB (metered + revocable), so you no longer need to list every client here. The gateway is fail-closed: no request is served without a valid admin key **or** a valid DB client key. |
 | `AIMNIS_ADMIN_API_KEY` | *your key* | Guards the operator endpoint `POST /admin/registration` (pause/resume eval intake). Unset ⇒ that endpoint is disabled (404); you can still flip the flag directly in the DB. |
-| `AIMNIS_RESEND_API_KEY` | *your key* | Transactional email (issued-key delivery + waitlist). Omit → email is a logged no-op and the key is only shown on-screen. See **Email deliverability** below. |
+| `AIMNIS_RESEND_API_KEY` | *your key* | Transactional email (issued-key delivery + waitlist). When set, issued keys are delivered **only by email** (a working inbox is the anti-farming gate; a failed send revokes the key). Omit → email is a logged no-op and the key is shown once on-screen (dev / self-host). See **Email deliverability** below. |
+| `AIMNIS_PORTAL_IP_HOURLY` | `5` | Max portal form submissions (`/register` + `/waitlist`) per client IP per hour. Optional (default shown). |
 | `AIMNIS_EMAIL_FROM` | `Aimnis <eval@aimnis.com>` | From address; the domain must be verified in Resend. |
 | `AIMNIS_PORTAL_BASE_URL` | `https://aimnis.com` | Used in email links. |
 | `AIMNIS_CLIENT_DEFAULT_RPM` / `_RPD` | `20` / `200` | Per-issued-key caps. Keep RPD well under the shared ~1,000/day upstream ceiling so one key can't drain the pool. Optional (these are the defaults). |
