@@ -241,8 +241,11 @@ class Settings(BaseSettings):
         "nvidia/nemotron-3-super-120b-a12b:free",      # Nvidia — large general
         "openai/gpt-oss-20b:free",                     # Darkbloom — fast fallback
     ]
-    distill_timeout_seconds: float = 20.0   # free models are slow; degrade to snippets past this
-    distill_max_tokens: int = 1024          # headroom for reasoning models' hidden reasoning tokens
+    distill_timeout_seconds: float = 20.0   # overall budget incl. empty-answer chain retries
+    # Headroom for reasoning models' hidden reasoning tokens: providers serving the
+    # free variants sometimes ignore the low-effort cap and burn the whole budget on
+    # reasoning (finish_reason='length', empty content — seen in prod 2026-07-05).
+    distill_max_tokens: int = 2048
     distill_purpose: str = "interactive_fallback"  # quota sub-budget this spends from
     # Courtesy attribution headers OpenRouter uses for its app leaderboard.
     openrouter_referer: str = "https://aimnis.com"

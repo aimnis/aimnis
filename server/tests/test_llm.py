@@ -66,13 +66,59 @@ async def test_distill_maps_500_to_error():
     assert ei.value.http_status == 500
 
 
-async def test_distill_empty_answer_is_error():
+async def test_distill_empty_answer_exhausts_chain_then_errors():
+    # Every chain member returns empty → each is dropped and retried until the
+    # chain is exhausted, and the final error is the empty-answer LLMError.
+    calls = []
+
     def handler(request):
+        calls.append(request)
         return httpx.Response(200, json={"choices": [{"message": {"content": "  "}}]})
 
-    with pytest.raises(llm.LLMError):
+    with pytest.raises(llm.LLMError, match="empty answer"):
         await llm.distill("q", [{"title": "T", "url": "u", "snippet": "s"}],
+                          models=["a/one:free", "b/two:free"],
                           api_key="k", transport=_transport(handler))
+    assert len(calls) == 2
+
+
+async def test_distill_empty_answer_retries_next_chain_model():
+    # A reasoning-capable free variant can burn the whole completion budget on
+    # excluded reasoning and "succeed" with empty content — OpenRouter's own
+    # fallback does NOT fire on that (it's a 200), so complete() must drop the
+    # responding model (matching its dated resolution back to the alias) and
+    # retry the rest of the chain itself. This exact mode took out prod
+    # distillation on 2026-07-05.
+    import json
+
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(body)
+        if len(seen) == 1:
+            return httpx.Response(200, json={
+                "model": "cohere/north-mini-code-20260617:free",  # dated resolution
+                "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+            })
+        return httpx.Response(200, json={
+            "model": "nvidia/nemotron-3-super-120b-a12b:free",
+            "choices": [{"message": {"content": "Use X [1]."}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        })
+
+    out = await llm.distill(
+        "q", [{"title": "T", "url": "u", "snippet": "s"}],
+        models=["cohere/north-mini-code:free", "nvidia/nemotron-3-super-120b-a12b:free"],
+        api_key="k", transport=_transport(handler),
+    )
+    assert out.answer_text == "Use X [1]."
+    assert "nemotron" in out.model
+    # First attempt offered the full chain; the retry dropped the empty responder.
+    assert seen[0]["models"] == ["cohere/north-mini-code:free",
+                                 "nvidia/nemotron-3-super-120b-a12b:free"]
+    assert seen[1] == {**seen[1], "model": "nvidia/nemotron-3-super-120b-a12b:free"}
+    assert "models" not in seen[1]
 
 
 async def test_distill_without_key_raises(monkeypatch):

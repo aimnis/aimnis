@@ -12,12 +12,16 @@ Errors are classified so the caller can record the right ledger status:
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 import httpx
 
 from .config import settings
+
+log = logging.getLogger("aimnis.llm")
 
 _SYSTEM = (
     "You are a research assistant for software engineers. Using ONLY the numbered "
@@ -42,6 +46,15 @@ class LLMRateLimited(LLMError):
 
 class LLMTimeout(LLMError):
     pass
+
+
+class _EmptyAnswer(LLMError):
+    """A 2xx completion whose content is empty — carries the model that
+    responded so the retry loop can drop it from the chain."""
+
+    def __init__(self, message: str, responding_model: str | None) -> None:
+        super().__init__(message)
+        self.responding_model = responding_model
 
 
 @dataclass(frozen=True)
@@ -72,7 +85,17 @@ async def complete(
     transport: httpx.AsyncBaseTransport | None = None,  # for tests (MockTransport)
 ) -> ChatResult:
     """One chat completion via OpenRouter, routed across the provider-diverse
-    fallback chain. Shared by distillation and the quality judge."""
+    fallback chain. Shared by distillation and the quality judge.
+
+    OpenRouter's own `models` fallback only fires when a provider errors or is
+    unavailable — a model that "succeeds" with EMPTY content (a reasoning-capable
+    free variant whose provider ignores the effort cap and burns the whole
+    completion budget on excluded reasoning, finish_reason='length') is a success
+    to the router. That mode silently took out prod distillation, so on an empty
+    answer we drop the responding model and retry the rest of the chain ourselves.
+    `timeout` is the overall budget across all attempts, and the retries ride the
+    caller's single quota reservation (the ledger counts logical distills, not
+    HTTP requests)."""
     chain = (models or settings.distill_models)[:3]  # OpenRouter caps `models` at 3
     api_key = api_key or settings.openrouter_api_key
     base_url = base_url or settings.openrouter_base_url
@@ -83,6 +106,49 @@ async def complete(
     if not chain:
         raise LLMError("no models configured")
 
+    deadline = time.monotonic() + timeout
+    while True:
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise LLMTimeout(f"chat timed out after {timeout}s")
+        try:
+            return await _one_completion(
+                chain, messages, max_tokens=max_tokens, temperature=temperature,
+                timeout=budget, api_key=api_key, base_url=base_url,
+                transport=transport,
+            )
+        except _EmptyAnswer as exc:
+            chain = _drop_responder(chain, exc.responding_model)
+            if not chain:
+                raise
+            log.warning("empty answer from %s — retrying with %s",
+                        exc.responding_model, chain)
+
+
+def _drop_responder(chain: list[str], responder: str | None) -> list[str]:
+    """Remove the chain entry a response came from. OpenRouter reports a dated
+    resolution ('cohere/north-mini-code-20260617:free') of the alias we requested
+    ('cohere/north-mini-code:free'), so match on the un-suffixed id prefix; when
+    nothing matches, drop the head — the most likely responder."""
+    if responder:
+        rbase = responder.split(":")[0]
+        kept = [m for m in chain if not rbase.startswith(m.split(":")[0])]
+        if len(kept) < len(chain):
+            return kept
+    return chain[1:]
+
+
+async def _one_completion(
+    chain: list[str],
+    messages: list[dict],
+    *,
+    max_tokens: int,
+    temperature: float,
+    timeout: float,
+    api_key: str,
+    base_url: str,
+    transport: httpx.AsyncBaseTransport | None,
+) -> ChatResult:
     payload = {
         "messages": messages, "max_tokens": max_tokens, "temperature": temperature,
         # Several free-tier chain members (nemotron, gpt-oss) are reasoning models
@@ -133,9 +199,10 @@ async def complete(
         # primary) — this is the dominant failure mode on reasoning-capable free
         # models and was previously invisible in the ledger's error column.
         finish_reason = (data.get("choices") or [{}])[0].get("finish_reason")
-        raise LLMError(
+        raise _EmptyAnswer(
             f"OpenRouter returned an empty answer "
-            f"(model={data.get('model')!r}, finish_reason={finish_reason!r})"
+            f"(model={data.get('model')!r}, finish_reason={finish_reason!r})",
+            data.get("model"),
         )
 
     usage = data.get("usage") or {}
