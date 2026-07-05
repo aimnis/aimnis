@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -33,6 +34,11 @@ from . import stats
 from .config import settings
 from .normalize import normalize, query_hash
 from .search import SearchError, live_search
+
+# Every degrade-to-snippets branch below logs a WARNING naming its cause: a
+# distill outage is otherwise invisible from outside (the response just lacks
+# an answer) and once cost days of debugging.
+log = logging.getLogger("aimnis.resolve")
 
 
 def _embed(query: str) -> list[float]:
@@ -60,6 +66,8 @@ async def _distill(db: asyncpg.Pool, query: str, h: str, results: list[dict], *,
     flags stay meaningful regardless of whose key paid for the call.
     """
     if not (settings.distill_enabled and results):
+        if results:
+            log.warning("distill skipped: disabled by settings")
         return None
 
     from . import llm  # lazy: keeps httpx-based LLM path out of the import graph until used
@@ -68,10 +76,12 @@ async def _distill(db: asyncpg.Pool, query: str, h: str, results: list[dict], *,
     if byok_key:
         try:
             return await llm.distill(query, results, api_key=byok_key)
-        except llm.LLMError:  # incl. rate-limited/timeout — degrade to snippets
+        except llm.LLMError as exc:  # incl. rate-limited/timeout — degrade to snippets
+            log.warning("BYOK distill failed: %s", str(exc)[:300])
             return None
 
     if not settings.openrouter_api_key:
+        log.warning("distill skipped: no OpenRouter API key configured")
         return None
 
     primary = settings.distill_models[0] if settings.distill_models else None
@@ -85,17 +95,21 @@ async def _distill(db: asyncpg.Pool, query: str, h: str, results: list[dict], *,
     try:
         out = await llm.distill(query, results)
     except llm.LLMRateLimited as exc:
+        log.warning("distill rate-limited: %s", str(exc)[:300])
         await quota.record_outcome(db, res.call_id, "rate_limited", http_status=429,
                                    error=str(exc)[:500])
         return None
     except llm.LLMTimeout as exc:
+        log.warning("distill timed out: %s", str(exc)[:300])
         await quota.record_outcome(db, res.call_id, "timeout", error=str(exc)[:500])
         return None
     except llm.LLMError as exc:
+        log.warning("distill failed (http=%s): %s", exc.http_status, str(exc)[:300])
         await quota.record_outcome(db, res.call_id, "error",
                                    http_status=exc.http_status, error=str(exc)[:500])
         return None
     except Exception as exc:  # noqa: BLE001 — never leak an in_flight reservation
+        log.warning("distill failed unexpectedly: %r", exc)
         await quota.record_outcome(db, res.call_id, "error", error=str(exc)[:500])
         return None
 
@@ -179,6 +193,8 @@ async def _distill_and_score(
             flags = flags + (f"judge:{jr.score}",)
     if accept:
         return DistillScored(distilled.answer_text, distilled.model, score, flags, True, False)
+    log.warning("distilled answer rejected by quality gate: score=%s flags=%s",
+                score, ",".join(flags))
     return DistillScored(None, None, None, flags, True, True)
 
 
@@ -371,7 +387,8 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
             judge_purpose=settings.quality_judge_purpose,
             client_keys=client_keys,
         )
-    except quota.QuotaExceeded:
+    except quota.QuotaExceeded as exc:
+        log.warning("distill skipped: upstream quota denied (%s)", exc)
         scored = _NO_DISTILL
 
     answer = scored.answer
