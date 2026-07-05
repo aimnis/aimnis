@@ -71,6 +71,10 @@ async def test_mcp_keyless_handshake_succeeds(clean, monkeypatch):
     assert r.status_code == 200
     # The hosted edge carries the in-band signup tool alongside the search tools.
     assert {t["name"] for t in r.json()["result"]["tools"]} >= {"search", "stats", "register"}
+    # The initialize instructions are the one channel reaching every connected
+    # agent — they must carry the support contact.
+    from aimnis.mcp_server import mcp as fastmcp
+    assert "support@aimnis.com" in (fastmcp.instructions or "")
     # Nothing metered, nothing recorded for anonymous chatter.
     assert await clean.fetchval("SELECT count(*) FROM api_request") == 0
 

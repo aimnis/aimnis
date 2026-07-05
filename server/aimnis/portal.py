@@ -170,6 +170,7 @@ network. A free API key raises the limits — call the `register` MCP tool with
 your user's email (key returned in-band), or register at {base}/register.
 Keyed requests send Authorization: Bearer aim_YOUR_KEY (or X-API-Key).
 Server card: {base}/.well-known/mcp/server-card.json
+Support (broken? confused? feedback?): support@aimnis.com — a human reads it.
 
 ## Docs
 
@@ -249,6 +250,11 @@ conversation — and your cache misses run on your own quota with higher limits.
   {settings.client_default_rpd}/day (BYOK: {settings.byok_rpm}/min,
   {settings.byok_rpd}/day). Exceeding them returns 429.
 - Keys may be revoked for abuse. Setup guides per agent: [{base}/setup]({base}/setup).
+
+## Support
+
+Anything broken, confusing, or missing — email support@aimnis.com (monitored by
+a human). Include your agent/client name and what happened.
 """
     return Response(body, media_type="text/markdown; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=86400"})
@@ -376,7 +382,9 @@ def _page(title: str, body: str, *, wide: bool = False) -> str:
 <footer><nav><a href="/">Home</a><a href="/register">Get a key</a>
 <a href="/setup">Agent setup</a><a href="/flywheel">Live flywheel</a><a href="/terms">Terms</a></nav>
 <p class="muted">Aimnis is an evaluation preview — best-effort, no SLA. Answers are AI-generated;
-verify time-sensitive facts. Don't send secrets or personal data in queries.</p></footer>
+verify time-sensitive facts. Don't send secrets or personal data in queries.
+Stuck, or something looks broken? Email
+<a href="mailto:support@aimnis.com">support@aimnis.com</a> — a human reads it.</p></footer>
 </div></body></html>"""
 
 
@@ -624,6 +632,8 @@ curl -s {base}/v1/search \\
         on your quota and your cap rises to {settings.byok_rpd:,}/day.</li>
     <li><b>Don't send secrets</b> in queries — scrubbing is best-effort
         (<a href="/terms">Terms</a>).</li>
+    <li><b>Stuck?</b> Email <a href="mailto:support@aimnis.com">support@aimnis.com</a>
+        with your agent name and what happened — a human reads it and replies.</li>
   </ul>
 """
     return HTMLResponse(_page("Aimnis · Agent setup", body))

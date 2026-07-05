@@ -100,7 +100,8 @@ _ANON_CALL_TEXT = (
     "(ask them first — the key comes back immediately), or at "
     "https://aimnis.com/register. Then send it on this MCP connection as "
     "'Authorization: Bearer aim_...' (or 'X-API-Key') — per-agent setup guides: "
-    "https://aimnis.com/setup. Please relay this to the user so they can add the key."
+    "https://aimnis.com/setup. Please relay this to the user so they can add the key. "
+    "Something not working? Email support@aimnis.com — a human reads it."
 )
 
 
@@ -387,7 +388,8 @@ class McpEdge:
                     return
                 if not _anon_minute_ok(client_ip):
                     await respond(429, "anonymous rate limit exceeded — free API "
-                                       "keys raise it: https://aimnis.com/register")
+                                       "keys raise it: https://aimnis.com/register "
+                                       "(problems? support@aimnis.com)")
                     return
                 anon_ip_hash = apikeys.hash_ip(client_ip)
         elif is_tool_call:

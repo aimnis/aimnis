@@ -226,7 +226,8 @@ async def test_llms_txt(clean, monkeypatch):
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
     base = settings.portal_base_url.rstrip("/")
     assert r.text.startswith("# Aimnis")
-    for needle in (f"{base}/mcp", f"{base}/register", f"{base}/setup", "server-card.json"):
+    for needle in (f"{base}/mcp", f"{base}/register", f"{base}/setup", "server-card.json",
+                   "support@aimnis.com"):
         assert needle in r.text
 
 
@@ -372,6 +373,7 @@ async def test_auth_md(clean, monkeypatch):
     assert "/register" in r.text and "Bearer aim_" in r.text
     assert "no OAuth" in r.text
     assert f"{settings.client_default_rpm} requests/min" in r.text
+    assert "support@aimnis.com" in r.text
 
 
 async def test_markdown_negotiation(clean, monkeypatch):

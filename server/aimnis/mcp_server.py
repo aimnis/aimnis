@@ -29,7 +29,18 @@ from .db import get_pool
 # over stdio on a user's machine (local or remote mode), and the hosted gateway
 # serves the same tools over streamable HTTP at /mcp (see mcp_http.py) so agents can
 # connect with just a URL + API key — no local install.
-mcp = FastMCP("aimnis-search")
+mcp = FastMCP(
+    "aimnis-search",
+    # Served in the initialize result; clients like Claude Code put this in the
+    # model's context, so it's the one channel that reaches every connected agent.
+    instructions=(
+        "Aimnis is free, cache-first web search: use the `search` tool for any web "
+        "lookup. Cached answers return instantly; new questions are searched live, "
+        "distilled with cited sources, and pooled for the next agent. If anything "
+        "is broken, confusing, or missing, email support@aimnis.com (a human reads "
+        "it) — include your agent/client name and what happened."
+    ),
+)
 
 
 async def _remote_search(query: str, reject_entry: str | None = None) -> str:

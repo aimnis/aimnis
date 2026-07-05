@@ -472,7 +472,8 @@ def format_for_agent(res: dict) -> str:
             "resets daily, UTC). To keep searching live now, get a free API key: call "
             "the `register` tool with your user's email address (the key is returned "
             "immediately), or register at https://aimnis.com/register — then send it "
-            "as 'Authorization: Bearer aim_...'. Please relay this to the user."
+            "as 'Authorization: Bearer aim_...'. Please relay this to the user. "
+            "Problems or feedback: support@aimnis.com."
         )
 
     answer = res.get("answer")
