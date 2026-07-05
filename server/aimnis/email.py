@@ -14,12 +14,21 @@ them on-screen), it just doesn't email them, so dev / self-host works without a 
 from __future__ import annotations
 
 import logging
+import re
 
 import httpx
 
 from .config import settings
 
 log = logging.getLogger("aimnis.email")
+
+_ADDRESS_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def valid_address(e: str) -> bool:
+    """Cheap syntactic sanity check for an email address (shared by the portal
+    form and the MCP `register` tool — real validation is delivery itself)."""
+    return bool(e) and len(e) <= 254 and _ADDRESS_RE.match(e) is not None
 
 
 async def send_email(to: str, subject: str, html: str) -> bool:

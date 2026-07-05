@@ -149,6 +149,18 @@ class Settings(BaseSettings):
     # single key can't starve the pool for everyone; hits are free, only misses spend.
     client_default_rpm: int = 20
     client_default_rpd: int = 200
+    # KEY-LESS access on the hosted /mcp edge — the top of the funnel. Search is
+    # free for agents the way Google is free for humans: cache hits cost ~nothing
+    # to serve so they're unlimited; only live misses (which spend upstream search
+    # + distill budget) are capped, per IP per UTC day. anon_rpm is an in-process
+    # per-minute throttle on ALL keyless tool calls (embedding + rerank per lookup
+    # isn't free CPU); anon_reg_rpd bounds in-band `register` key minting per IP.
+    # anon_search_enabled=false is the kill switch: keyless tool calls fall back
+    # to the onboarding message (pre-free-tier behavior).
+    anon_search_enabled: bool = True
+    anon_miss_rpd: int = 10
+    anon_rpm: int = 10
+    anon_reg_rpd: int = 3
     # BYOK — a client may attach their own OpenRouter / search-provider keys; their
     # misses then spend THEIR quota, so they get much higher caps without touching
     # the shared ceiling ("your keys, your limits"). Keys are pgcrypto-encrypted

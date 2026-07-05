@@ -66,3 +66,35 @@ async def test_revoke_by_email(clean):
     issued = await apikeys.issue(clean, email="f@example.com")
     assert await apikeys.revoke(clean, email="F@Example.com") == 1  # case-insensitive
     assert not (await apikeys.reserve(clean, issued.key)).granted
+
+
+# --------------------------------------------------------------------------- #
+# Anonymous (keyless free-tier) per-IP daily budgets
+# --------------------------------------------------------------------------- #
+
+async def test_reserve_anon_miss_caps_per_ip_per_day(clean, monkeypatch):
+    from aimnis.config import settings
+    monkeypatch.setattr(settings, "anon_miss_rpd", 2)
+    h = apikeys.hash_ip("203.0.113.9")
+    assert await apikeys.reserve_anon_miss(clean, h)
+    assert await apikeys.reserve_anon_miss(clean, h)
+    assert not await apikeys.reserve_anon_miss(clean, h)
+    # Independent budget per IP…
+    assert await apikeys.reserve_anon_miss(clean, apikeys.hash_ip("203.0.113.10"))
+    # …and per kind: the exhausted-miss IP can still register.
+    assert await apikeys.reserve_anon_registration(clean, h)
+
+
+async def test_reserve_anon_zero_cap_denies(clean, monkeypatch):
+    from aimnis.config import settings
+    monkeypatch.setattr(settings, "anon_miss_rpd", 0)
+    assert not await apikeys.reserve_anon_miss(clean, apikeys.hash_ip("203.0.113.11"))
+
+
+def test_hash_ip_is_salted_and_short():
+    h = apikeys.hash_ip("203.0.113.9")
+    assert len(h) == 16
+    # Deterministic (budgets accumulate) but not the bare sha256 of the IP.
+    import hashlib
+    assert h == apikeys.hash_ip("203.0.113.9")
+    assert h != hashlib.sha256(b"203.0.113.9").hexdigest()[:16]

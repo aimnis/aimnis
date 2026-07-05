@@ -124,9 +124,20 @@ async def search(
     # feeds hit-satisfaction sequencing.
     from . import apikeys
 
+    # Keyless (free-tier) callers on the hosted edge: cache hits are free and
+    # unmetered; a MISS takes one unit of the caller's per-IP daily budget before
+    # any upstream money is spent. Keyed/admin/stdio callers have no anon marker
+    # ⇒ no gate.
+    anon_ip = apikeys.current_anon_ip.get()
+    miss_gate = None
+    if anon_ip is not None:
+        async def miss_gate():  # noqa: F811 — deliberate: None or this closure
+            return await apikeys.reserve_anon_miss(db, anon_ip)
+
     result = await resolve.resolve_search(
         db, query, client_keys=apikeys.current_client_keys.get(),
         client_id=apikeys.current_client_id.get(), reject_entry=reject_entry,
+        miss_gate=miss_gate,
     )
     return resolve.format_for_agent(result)
 

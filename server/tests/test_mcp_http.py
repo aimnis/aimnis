@@ -7,13 +7,14 @@ skips lifespan.
 
 from __future__ import annotations
 
+import re
 from contextlib import asynccontextmanager
 
 import httpx
 
-from aimnis import api, apikeys, db
+from aimnis import api, apikeys, db, flags
 from aimnis.config import settings
-from aimnis.mcp_http import mcp_edge
+from aimnis.mcp_http import _anon_minute, mcp_edge
 
 _MCP_HEADERS = {
     "Content-Type": "application/json",
@@ -31,6 +32,13 @@ def _tools_call(query: str) -> dict:
     }
 
 
+def _register_call(email: str) -> dict:
+    return {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "register", "arguments": {"email": email}},
+    }
+
+
 _TOOLS_LIST = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
 
 
@@ -43,6 +51,9 @@ async def _client(pool, monkeypatch):
     # module-local reference must be patched too or the MCP tools grab a REAL pool.
     from aimnis import mcp_server
     monkeypatch.setattr(mcp_server, "get_pool", fake_get_pool)
+    # The keyless minute throttle is in-process state keyed by IP; every test
+    # shares the ASGI test client's IP, so clear it between tests.
+    _anon_minute.clear()
     async with mcp_edge.run():
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=api.app), base_url="http://t"
@@ -58,26 +69,111 @@ async def test_mcp_keyless_handshake_succeeds(clean, monkeypatch):
     async with _client(clean, monkeypatch) as c:
         r = await c.post("/mcp", headers=_MCP_HEADERS, json=_TOOLS_LIST)
     assert r.status_code == 200
-    assert {t["name"] for t in r.json()["result"]["tools"]} >= {"search", "stats"}
+    # The hosted edge carries the in-band signup tool alongside the search tools.
+    assert {t["name"] for t in r.json()["result"]["tools"]} >= {"search", "stats", "register"}
     # Nothing metered, nothing recorded for anonymous chatter.
     assert await clean.fetchval("SELECT count(*) FROM api_request") == 0
 
 
-async def test_mcp_keyless_tool_call_gets_onboarding_message(clean, monkeypatch):
-    # The key-less tools/call is the onboarding surface: a JSON-RPC tool result
-    # (isError) whose text lands in the model's context and points at /register.
+async def test_mcp_keyless_tool_call_runs_free(clean, monkeypatch):
+    # The free tier: a key-less tools/call actually EXECUTES (stats here; the
+    # search miss budget is exercised at the resolve layer). Nothing is metered
+    # against client keys.
     monkeypatch.setattr(settings, "gateway_api_keys", [])
     async with _client(clean, monkeypatch) as c:
         r = await c.post("/mcp", headers=_MCP_HEADERS, json=_tools_call("x"))
     assert r.status_code == 200
     body = r.json()
     assert body["id"] == 1  # echoes the request id
+    assert body["result"].get("isError") is not True
+    assert "hit rate" in body["result"]["content"][0]["text"].lower()
+    assert await clean.fetchval("SELECT count(*) FROM api_request") == 0
+
+
+async def test_mcp_keyless_kill_switch_restores_onboarding(clean, monkeypatch):
+    # anon_search_enabled=False reverts key-less tool calls to the onboarding
+    # message (isError result pointing at register) — the pre-free-tier behavior.
+    monkeypatch.setattr(settings, "gateway_api_keys", [])
+    monkeypatch.setattr(settings, "anon_search_enabled", False)
+    async with _client(clean, monkeypatch) as c:
+        r = await c.post("/mcp", headers=_MCP_HEADERS, json=_tools_call("x"))
+    assert r.status_code == 200
+    body = r.json()
     assert body["result"]["isError"] is True
     text = body["result"]["content"][0]["text"]
-    assert "aimnis.com/register" in text and "Bearer aim_" in text
-    # No search ran, nothing was metered.
-    assert await clean.fetchval("SELECT count(*) FROM api_request") == 0
+    assert "aimnis.com/register" in text and "register" in text
     assert await clean.fetchval("SELECT count(*) FROM lookup_event") == 0
+
+
+async def test_mcp_keyless_minute_throttle(clean, monkeypatch):
+    # In-process per-IP throttle on keyless tool calls (cache lookups burn CPU).
+    monkeypatch.setattr(settings, "gateway_api_keys", [])
+    monkeypatch.setattr(settings, "anon_rpm", 1)
+    async with _client(clean, monkeypatch) as c:
+        first = await c.post("/mcp", headers=_MCP_HEADERS, json=_tools_call("x"))
+        second = await c.post("/mcp", headers=_MCP_HEADERS, json=_tools_call("x"))
+        # Chatter is NOT throttled — only tool calls.
+        chatter = await c.post("/mcp", headers=_MCP_HEADERS, json=_TOOLS_LIST)
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert "aimnis.com/register" in second.json()["error"]
+    assert chatter.status_code == 200
+
+
+async def test_mcp_register_tool_issues_key_in_band(clean, monkeypatch):
+    # The whole point of the in-band funnel: one tool call → a working key in the
+    # tool result, no email round-trip (email is a best-effort copy).
+    monkeypatch.setattr(settings, "gateway_api_keys", [])
+    async with _client(clean, monkeypatch) as c:
+        r = await c.post("/mcp", headers=_MCP_HEADERS,
+                         json=_register_call("newuser@example.com"))
+        assert r.status_code == 200
+        text = r.json()["result"]["content"][0]["text"]
+        key = re.search(r"aim_[A-Za-z0-9_-]+", text).group(0)
+        # The issued key authenticates and meters like any portal-issued key.
+        keyed = await c.post("/mcp", headers={**_MCP_HEADERS, "X-API-Key": key},
+                             json=_tools_call("x"))
+    row = await clean.fetchrow("SELECT email, status, key_hash FROM api_client")
+    assert row["email"] == "newuser@example.com" and row["status"] == "active"
+    assert row["key_hash"] == apikeys.hash_key(key)
+    assert keyed.status_code == 200
+    assert await clean.fetchval("SELECT count(*) FROM api_request") == 1
+
+
+async def test_mcp_register_tool_rejects_bad_email(clean, monkeypatch):
+    monkeypatch.setattr(settings, "gateway_api_keys", [])
+    async with _client(clean, monkeypatch) as c:
+        r = await c.post("/mcp", headers=_MCP_HEADERS, json=_register_call("not-an-email"))
+    text = r.json()["result"]["content"][0]["text"]
+    assert "valid email" in text and "aim_" not in text
+    assert await clean.fetchval("SELECT count(*) FROM api_client") == 0
+
+
+async def test_mcp_register_tool_at_capacity_waitlists(clean, monkeypatch):
+    monkeypatch.setattr(settings, "gateway_api_keys", [])
+    await flags.set_flag(clean, "registration_open", False)
+    async with _client(clean, monkeypatch) as c:
+        r = await c.post("/mcp", headers=_MCP_HEADERS,
+                         json=_register_call("waitme@example.com"))
+    text = r.json()["result"]["content"][0]["text"]
+    assert "waitlist" in text.lower() and "aim_" not in text
+    assert await clean.fetchval("SELECT count(*) FROM api_client") == 0
+    assert await clean.fetchval(
+        "SELECT count(*) FROM waitlist WHERE email='waitme@example.com'") == 1
+
+
+async def test_mcp_register_tool_per_ip_daily_cap(clean, monkeypatch):
+    # Key farming from one network is bounded per day; the refusal points at the
+    # portal path instead of dead-ending.
+    monkeypatch.setattr(settings, "gateway_api_keys", [])
+    monkeypatch.setattr(settings, "anon_reg_rpd", 1)
+    async with _client(clean, monkeypatch) as c:
+        r1 = await c.post("/mcp", headers=_MCP_HEADERS, json=_register_call("a@example.com"))
+        r2 = await c.post("/mcp", headers=_MCP_HEADERS, json=_register_call("b@example.com"))
+    assert "aim_" in r1.json()["result"]["content"][0]["text"]
+    t2 = r2.json()["result"]["content"][0]["text"]
+    assert "aim_" not in t2 and "aimnis.com/register" in t2
+    assert await clean.fetchval("SELECT count(*) FROM api_client") == 1
 
 
 async def test_mcp_url_api_key_works_and_is_metered(clean, monkeypatch):
@@ -93,17 +189,17 @@ async def test_mcp_url_api_key_works_and_is_metered(clean, monkeypatch):
     assert await clean.fetchval("SELECT count(*) FROM api_request") == 1
 
 
-async def test_mcp_foreign_url_key_stays_on_onboarding_path(clean, monkeypatch):
+async def test_mcp_foreign_url_key_stays_on_keyless_path(clean, monkeypatch):
     # A non-aim_ query value (e.g. a gateway's own key leaking through a proxy)
-    # is ignored — the caller gets the keyless onboarding message, not a 401 for
-    # a key they never meant to present to US.
+    # is ignored — the caller stays on the keyless FREE path (the call runs),
+    # not a 401 for a key they never meant to present to US.
     monkeypatch.setattr(settings, "gateway_api_keys", [])
     async with _client(clean, monkeypatch) as c:
         r = await c.post("/mcp?api_key=8a58cfe0-daf2-4dca-8b38-6266ae7bdead",
                          headers=_MCP_HEADERS, json=_tools_call("x"))
     assert r.status_code == 200
-    assert r.json()["result"]["isError"] is True
-    assert "aimnis.com/register" in r.json()["result"]["content"][0]["text"]
+    assert r.json()["result"].get("isError") is not True
+    assert await clean.fetchval("SELECT count(*) FROM api_request") == 0
 
 
 async def test_mcp_header_key_wins_over_url_key(clean, monkeypatch):

@@ -38,11 +38,8 @@ from .config import settings
 
 router = APIRouter()
 
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-def _valid_email(e: str) -> bool:
-    return bool(e) and len(e) <= 254 and _EMAIL_RE.match(e) is not None
+# Address syntax check lives in email_mod (shared with the MCP `register` tool).
+_valid_email = email_mod.valid_address
 
 
 # --------------------------------------------------------------------------- #
@@ -154,13 +151,16 @@ async def llms_txt() -> Response:
     base = settings.portal_base_url.rstrip("/")
     body = f"""# Aimnis
 
-> Collaborative, cache-first web search for AI agents. Ask over MCP; semantically
-> similar questions answered before (by anyone) return a distilled, source-cited
-> answer instantly. New questions are searched live, distilled, cited, and pooled
-> for the next agent. Search once, answer everyone.
+> Free, collaborative, cache-first web search for AI agents. Ask over MCP;
+> semantically similar questions answered before (by anyone) return a distilled,
+> source-cited answer instantly. New questions are searched live, distilled,
+> cited, and pooled for the next agent. Search once, answer everyone.
 
-MCP endpoint: {base}/mcp (streamable HTTP; Authorization: Bearer aim_YOUR_KEY,
-or X-API-Key). Free eval key by email: {base}/register
+MCP endpoint: {base}/mcp (streamable HTTP). NO KEY NEEDED to search: cached
+answers are free and unlimited; new questions get a daily free allowance per
+network. A free API key raises the limits — call the `register` MCP tool with
+your user's email (key returned in-band), or register at {base}/register.
+Keyed requests send Authorization: Bearer aim_YOUR_KEY (or X-API-Key).
 Server card: {base}/.well-known/mcp/server-card.json
 
 ## Docs
@@ -191,6 +191,12 @@ search over MCP and REST.
 AI agents calling the MCP endpoint at {base}/mcp (streamable HTTP) or the REST
 gateway at {base}/v1/search and {base}/v1/stats.
 
+## No key needed to start
+
+Search is free for agents: connect to {base}/mcp with no credential and call
+`search`. Cached answers are free and unlimited; new (uncached) questions get a
+daily free allowance per network. A free API key raises those limits.
+
 ## Credential
 
 - Static bearer API key, prefix `aim_`. There is **no OAuth** authorization
@@ -203,27 +209,34 @@ gateway at {base}/v1/search and {base}/v1/stats.
 
 ## Registration
 
-Agent registration uses the **verified-email** method (no programmatic
-registration endpoint — a human confirms via their inbox):
+Two paths, both free:
+
+- **In-band (preferred for agents)**: call the `register` MCP tool on
+  {base}/mcp with your user's email address (ask them first — never invent
+  one). The key is returned in the tool result and a copy is emailed.
+- **Portal**: your user submits their email at {base}/register (HTML form) and
+  the key arrives in their inbox.
 
 - `register_uri`: {base}/register
 - `identity_types_supported`: `verified-email`
 - `credential_types_supported`: `api_key` (bearer, prefix `aim_`)
 
-Flow: hand off to your user — they submit their email address at the
-`register_uri` (HTML form) and the API key arrives in their inbox. An agent
-cannot complete registration alone. Optional BYOK: attach your own upstream
-(OpenRouter / search) keys at registration and your cache misses run on your
-own quota with higher limits.
+Re-registering with the same email rotates (replaces) that email's key.
+Optional BYOK: attach your own upstream (OpenRouter / search) keys at the
+PORTAL form only — never paste upstream provider keys into an agent
+conversation — and your cache misses run on your own quota with higher limits.
 
 ## Without a key
 
-- MCP: the handshake and `tools/list` work; `tools/call` returns registration
-  instructions instead of search results.
-- REST: all {base}/v1 endpoints return 401 with a hint body.
+- MCP: everything works — handshake, `tools/list`, and `tools/call`. Cached
+  answers are unlimited; uncached (live) searches draw from a daily free
+  allowance per network, then return instructions for getting a free key.
+- REST: {base}/v1 endpoints require a key and return 401 with a hint body.
 
 ## Limits and revocation
 
+- Keyless: cached answers unlimited; {settings.anon_miss_rpd} live (uncached)
+  searches per network per day, {settings.anon_rpm} calls/min.
 - Default per-key limits: {settings.client_default_rpm} requests/min,
   {settings.client_default_rpd}/day (BYOK: {settings.byok_rpm}/min,
   {settings.byok_rpd}/day). Exceeding them returns 429.
@@ -384,14 +397,14 @@ async def landing() -> HTMLResponse:
   <div class="hero">
     <div>
       <h1>Aimnis</h1>
-      <p class="tag">Collaborative search for agents. The <b>faster</b> and <b>cheaper</b> agentic search tool.</p>
-      <p>Your coding agent keeps re-searching the same things — the new library version, the
-      same error message, the same API change — and you wait and pay every time. <b>Aimnis
-      gives your agent a shared memory of the web.</b> Anything that anyone's agent has asked
-      before comes back instantly, with sources.</p>
+      <p class="tag"><b>Free search for agents.</b> No signup, no key, no card — connect and search.</p>
+      <p>Search has always been free for people. Aimnis makes it free for agents:
+      a <b>shared memory of the web</b> — anything any agent has asked comes back instantly,
+      with sources, and every new question makes it better for everyone.</p>
+      <pre style="margin-top:14px">URL: https://aimnis.com/mcp   (MCP — point your agent here, that's the setup)</pre>
       <p style="margin-top:18px">
-        <a class="btn" href="/register">Get an eval API key</a>
-        <a class="btn secondary" href="/setup">Agent setup</a>
+        <a class="btn" href="/setup">Connect your agent</a>
+        <a class="btn secondary" href="/flywheel">See it live</a>
       </p>
     </div>
     <div>
@@ -410,12 +423,12 @@ async def landing() -> HTMLResponse:
 
   <h2>What you get</h2>
   <div class="benefits">
+    <div class="benefit"><b>🆓 Free for agents</b>
+      <p>Nothing to sign up for, no card ever. Cached answers are free and unlimited;
+      brand-new questions get a daily free allowance.</p></div>
     <div class="benefit"><b>⚡ Faster sessions</b>
       <p>Known questions come back in milliseconds, not a full web search. Your agent spends
       its time coding.</p></div>
-    <div class="benefit"><b>💰 Lower cost</b>
-      <p>Live search runs only on genuinely new questions. Nobody pays for the same answer
-      twice.</p></div>
     <div class="benefit"><b>🔍 Answers you can check</b>
       <p>Every answer shows its sources and its age — you can tell where it came from and how
       fresh it is.</p></div>
@@ -425,10 +438,14 @@ async def landing() -> HTMLResponse:
   </div>
 
   <div class="card">
-    <p style="margin:0 0 14px"><b>Try it free.</b> Eval key by email, no card. Your agent
-    connects with just a URL and the key — nothing to install, set up in two minutes.</p>
-    <a class="btn" href="/register">Get an eval API key</a>
-    <a class="btn secondary" href="/setup">Agent setup</a>
+    <p style="margin:0 0 14px"><b>Start in 30 seconds.</b> Point your MCP-capable agent at
+    the URL below and ask it to search — that's the whole setup.</p>
+    <pre style="margin:0 0 14px">https://aimnis.com/mcp</pre>
+    <p style="margin:0 0 14px">Need more live searches per day? A free key raises the limits —
+    your agent can even fetch one for you (tell it to call the <code>register</code> tool),
+    or grab it yourself in ten seconds.</p>
+    <a class="btn" href="/setup">Agent setup</a>
+    <a class="btn secondary" href="/register">Free key — higher limits</a>
     <a class="btn secondary" href="/flywheel">See the live flywheel</a>
   </div>
 
@@ -442,10 +459,10 @@ async def landing() -> HTMLResponse:
   <a href="/setup#hermes">Hermes Agent</a>, <a href="/setup#pi">Pi</a>,
   <a href="/setup#claude-code">Claude Code</a>, or <a href="/setup#rest">plain REST</a>.</p>
 
-  <p class="muted">By requesting a key you agree to the <a href="/terms">Terms of Use</a>.
-  Operators reserve the right to revoke any key at any time.</p>
+  <p class="muted">Use of the service — with or without a key — is subject to the
+  <a href="/terms">Terms of Use</a>. Operators reserve the right to revoke any key at any time.</p>
 """
-    return HTMLResponse(_page("Aimnis · Collaborative Search for Agents", body, wide=True),
+    return HTMLResponse(_page("Aimnis · Free Search for Agents", body, wide=True),
                         headers={"Link": _DISCOVERY_LINKS})
 
 
@@ -529,13 +546,18 @@ curl -s {base}/v1/search \\
 
     body = f"""
   <h1>Set up your agent</h1>
-  <p class="tag">Aimnis is a hosted MCP server — most agents connect with just a URL and your key.</p>
+  <p class="tag">Aimnis is a hosted MCP server — most agents connect with just a URL.
+  No key needed to start.</p>
 
   <div class="card">
     <p style="margin:0"><b>Endpoint</b>: <code>{html.escape(mcp_url)}</code> (MCP, streamable HTTP)<br>
-    <b>Auth</b>: <code>Authorization: Bearer aim_…</code> or <code>X-API-Key: aim_…</code><br>
-    <b>Tools</b>: <code>search</code> (cached/live web answers, cited) · <code>stats</code> (pool metrics)<br>
-    No key yet? <a href="/register">Get one</a> — it takes ten seconds.</p>
+    <b>Keyless</b>: works out of the box — cached answers free and unlimited, plus a daily
+    allowance of live searches. In the snippets below, just leave the auth header out.<br>
+    <b>Auth (optional, raises limits)</b>: <code>Authorization: Bearer aim_…</code> or
+    <code>X-API-Key: aim_…</code> — free key: ask your agent to call the
+    <code>register</code> tool, or <a href="/register">get one by email</a>.<br>
+    <b>Tools</b>: <code>search</code> (cached/live web answers, cited) ·
+    <code>stats</code> (pool metrics) · <code>register</code> (free key, in-band)</p>
   </div>
 
   <h2 id="opencode">OpenCode</h2>
@@ -582,6 +604,9 @@ curl -s {base}/v1/search \\
 
   <h2>Good to know</h2>
   <ul>
+    <li><b>Keyless is real</b>: {settings.anon_miss_rpd} live searches per network per day,
+        cached answers unlimited. A free key raises that to
+        {settings.client_default_rpd}/day.</li>
     <li><b>Metering</b>: only actual searches count (MCP handshakes are free). Default limits:
         {settings.client_default_rpm}/min, {settings.client_default_rpd}/day per key.</li>
     <li><b>Cache hits are instant</b>; misses run a live search + distill and are slower
@@ -953,8 +978,10 @@ async def mcp_server_card() -> JSONResponse:
     # as the X-API-Key header (accepted by our /mcp edge alongside Bearer).
     api_key_field: dict = {
         "type": "string",
-        "title": "Aimnis API key",
-        "description": "Free eval key (aim_…) from https://aimnis.com/register",
+        "title": "Aimnis API key (optional)",
+        "description": ("Optional — search works keyless (cached answers free and "
+                        "unlimited, plus a daily live-search allowance). A free key "
+                        "(aim_…) from https://aimnis.com/register raises the limits."),
         "x-from": {"header": "x-api-key"},
     }
     if settings.demo_api_key:
@@ -965,10 +992,10 @@ async def mcp_server_card() -> JSONResponse:
         api_key_field["description"] += " — or keep the pre-filled shared demo key"
     return JSONResponse({
         "serverInfo": {"name": "Aimnis", "version": "0.1.0"},
-        "authentication": {"required": True, "schemes": ["bearer"]},
+        # Keyless search is a first-class mode: a key only raises limits.
+        "authentication": {"required": False, "schemes": ["bearer"]},
         "configSchema": {
             "type": "object",
-            "required": ["apiKey"],
             "properties": {"apiKey": api_key_field},
         },
         "tools": [
@@ -994,6 +1021,21 @@ async def mcp_server_card() -> JSONResponse:
                     "cache hit rate (all-time and recent), and the most-reused queries."
                 ),
                 "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "register",
+                "description": (
+                    "Get your user a free Aimnis API key (no credit card). Ask your "
+                    "user for their email address first; the key is returned in the "
+                    "tool result and a copy is emailed. A key raises daily "
+                    "live-search limits; cached answers are always free."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"email": {"type": "string"},
+                                   "use_case": {"type": "string"}},
+                    "required": ["email"],
+                },
             },
         ],
         "resources": [],

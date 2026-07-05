@@ -38,6 +38,14 @@ current_client_id: ContextVar[str | None] = ContextVar(
     "aimnis_client_id", default=None
 )
 
+# Request-scoped ANONYMOUS caller marker: the hashed client IP, set by the MCP
+# edge ONLY on keyless tool calls. Tools use it to budget what costs money (live
+# misses, key issuance) per IP per day — cache hits stay free. Default None ⇒
+# keyed/admin/stdio, no anon budgeting.
+current_anon_ip: ContextVar[str | None] = ContextVar(
+    "aimnis_anon_ip", default=None
+)
+
 
 def generate_key() -> str:
     """A fresh opaque client key: `aim_<43 url-safe chars>`."""
@@ -190,6 +198,27 @@ async def reserve(pool: asyncpg.Pool, presented_key: str) -> Reservation:
         granted=row["granted"],
         reason=row["reason"],
         client_id=str(row["client_id"]) if row["client_id"] is not None else None,
+    )
+
+
+def hash_ip(ip: str) -> str:
+    """Salted short hash of a client IP for anon budgeting — the raw IP never
+    lands in the DB (same stance as client_hash in lookup_event)."""
+    return hashlib.sha256(("aimnis-anon:" + ip).encode("utf-8")).hexdigest()[:16]
+
+
+async def reserve_anon_miss(pool: asyncpg.Pool, ip_hash: str) -> bool:
+    """Take one unit of today's keyless live-search (miss) budget for this IP.
+    Cache hits are never metered — only misses spend upstream money."""
+    return await pool.fetchval(
+        "SELECT reserve_anon($1, 'miss', $2)", ip_hash, settings.anon_miss_rpd
+    )
+
+
+async def reserve_anon_registration(pool: asyncpg.Pool, ip_hash: str) -> bool:
+    """Take one unit of today's in-band key-issuance budget for this IP."""
+    return await pool.fetchval(
+        "SELECT reserve_anon($1, 'registration', $2)", ip_hash, settings.anon_reg_rpd
     )
 
 

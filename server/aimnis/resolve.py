@@ -232,7 +232,7 @@ async def _cache_lookup(
 
 async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = None,
                          client_keys=None, client_id: str | None = None,
-                         reject_entry: str | None = None) -> dict:
+                         reject_entry: str | None = None, miss_gate=None) -> dict:
     # BYOK: `client_keys` (apikeys.ClientKeys) carries the calling client's own
     # upstream credentials. Their misses spend their quota (search + distill);
     # everything else — cache lookup, scrubbing, pooling — is identical. Used only
@@ -243,6 +243,12 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
     # never lands in lookup_event. `reject_entry` is the explicit-reject retry: the
     # named entry is excluded from this lookup, its reject_count bumps, and the
     # reject is logged as a dissatisfaction label on the prior hit.
+    #
+    # `miss_gate` (async () -> bool, or None) is the free-tier budget hook: called
+    # once IFF the cache can't answer, right before any upstream money is spent.
+    # False ⇒ return source="quota" instead of searching live. Cache hits never
+    # consult it — hits cost ~nothing to serve, so they stay free and unmetered
+    # (that asymmetry is the whole free-tier design; see mcp_http).
     #
     # Scrub FIRST: secrets/PII must never reach a third party (Brave/OpenRouter)
     # or the pool. Everything downstream uses the redacted text; a secret-dense
@@ -306,6 +312,13 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
                 if hit.content_at else None
             ),
         }
+
+    # The cache can't answer — from here on, upstream money gets spent. A gated
+    # (keyless) caller out of daily miss budget stops HERE: no live search, no
+    # distill, and no lookup_event (quota refusals aren't misses; logging them
+    # would depress the hit-rate metric the flywheel is judged by).
+    if miss_gate is not None and not await miss_gate():
+        return {"source": "quota", "results": []}
 
     try:
         # Fetch WIDE (search_fetch_limit) so the selector has a candidate pool.
@@ -448,6 +461,19 @@ def format_for_agent(res: dict) -> str:
     src = res["source"]
     if src == "error":
         return f"Aimnis: live search unavailable ({res['error']})."
+    if src == "quota":
+        # Keyless caller out of today's live-search budget. Cached answers stay
+        # free — this query just isn't in the pool yet. Only produced on the
+        # hosted MCP edge (see mcp_http), so the copy can name the register tool.
+        return (
+            "[Aimnis · daily free live-search limit reached] This query isn't in the "
+            "shared knowledge pool yet, and today's free live searches from your "
+            "network are used up (cached answers remain free and unlimited; the limit "
+            "resets daily, UTC). To keep searching live now, get a free API key: call "
+            "the `register` tool with your user's email address (the key is returned "
+            "immediately), or register at https://aimnis.com/register — then send it "
+            "as 'Authorization: Bearer aim_...'. Please relay this to the user."
+        )
 
     answer = res.get("answer")
     # A present `answer` is model-distilled → disclose it as AI-generated. Raw-snippet

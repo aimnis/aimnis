@@ -29,8 +29,9 @@ async def test_landing_and_terms(clean, monkeypatch):
     async with _client(clean, monkeypatch) as c:
         home = await c.get("/")
         terms = await c.get("/terms")
-    assert home.status_code == 200 and "Collaborative search" in home.text
-    assert "Get an eval API key" in home.text
+    assert home.status_code == 200 and "Free search for agents" in home.text
+    # Get-first funnel: the hero leads with keyless connect, not an email ask.
+    assert "No signup, no key" in home.text and "/mcp" in home.text
     assert terms.status_code == 200
     assert "revoke any key at any time" in terms.text
     assert "AI-generated" in terms.text
@@ -256,8 +257,9 @@ async def test_mcp_server_card(clean, monkeypatch):
         r = await c.get("/.well-known/mcp/server-card.json")
     assert r.status_code == 200
     card = r.json()
-    assert card["authentication"]["required"] is True
-    assert {t["name"] for t in card["tools"]} == {"search", "stats"}
+    # Keyless search is first-class: a key only raises limits.
+    assert card["authentication"]["required"] is False
+    assert {t["name"] for t in card["tools"]} == {"search", "stats", "register"}
     # No demo key configured → no default leaks into the public card.
     assert "default" not in card["configSchema"]["properties"]["apiKey"]
 
@@ -339,7 +341,7 @@ async def test_landing_renders_without_db(clean, monkeypatch):
     ) as c:
         home = await c.get("/")
     assert home.status_code == 200
-    assert "Collaborative search" in home.text
+    assert "Free search for agents" in home.text
 
 
 async def test_homepage_link_header_and_api_catalog(clean, monkeypatch):
@@ -385,7 +387,7 @@ async def test_markdown_negotiation(clean, monkeypatch):
     assert int(md.headers["x-markdown-tokens"]) > 0
     assert "Accept" in md.headers.get("vary", "")
     assert "# Aimnis" in md.text and "<h1" not in md.text
-    assert "[Get an eval API key](/register)" in md.text  # links survive as markdown
+    assert "[Connect your agent](/setup)" in md.text  # links survive as markdown
     # Discovery Link header still rides on the markdown variant.
     assert 'rel="api-catalog"' in md.headers.get("link", "")
     # Default stays HTML; non-HTML responses are never touched.

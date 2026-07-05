@@ -113,3 +113,68 @@ async def test_format_semantic_hit_offers_reject_entry():
         "results": [],
     })
     assert "reject_entry" not in out2 and "disregard" in out2
+
+
+# --------------------------------------------------------------------------- #
+# Free-tier miss gate: cache hits are free; the gate is consulted exactly once,
+# only when the cache can't answer, BEFORE any upstream spend.
+# --------------------------------------------------------------------------- #
+
+def _fake_embed(monkeypatch):
+    # Deterministic stub embedding — these tests exercise the gate, not ANN quality.
+    monkeypatch.setattr(resolve, "_embed", lambda q: [0.1] * settings.embedding_dim)
+
+
+async def test_miss_gate_denied_blocks_upstream_spend(clean, monkeypatch):
+    _fake_embed(monkeypatch)
+    upstream_called = []
+
+    async def fake_live(*a, **k):
+        upstream_called.append(1)
+        return []
+
+    monkeypatch.setattr(resolve, "live_search", fake_live)
+
+    async def gate():
+        return False
+
+    res = await resolve.resolve_search(clean, "free tier gate question", miss_gate=gate)
+    assert res["source"] == "quota"
+    assert not upstream_called
+    # A quota refusal is not a miss: it must not depress the hit-rate metric.
+    assert await clean.fetchval("SELECT count(*) FROM lookup_event") == 0
+
+    text = resolve.format_for_agent(res)
+    assert "register" in text and "aimnis.com/register" in text
+    assert "free" in text.lower()
+
+
+async def test_miss_gate_granted_runs_live_then_hit_skips_gate(clean, monkeypatch):
+    _fake_embed(monkeypatch)
+    monkeypatch.setattr(settings, "distill_enabled", False)
+
+    from aimnis.search import SearchResult
+
+    async def fake_live(*a, **k):
+        return [SearchResult(title="T", url="http://x.example", snippet="s")]
+
+    monkeypatch.setattr(resolve, "live_search", fake_live)
+
+    gate_calls = []
+
+    async def gate():
+        gate_calls.append(1)
+        return True
+
+    query = "free tier gate question two"
+    first = await resolve.resolve_search(clean, query, miss_gate=gate)
+    assert first["source"] == "live" and gate_calls == [1]
+
+    async def closed_gate():
+        gate_calls.append(1)
+        return False
+
+    # Identical query again: exact cache hit — the (now closed) gate is never
+    # consulted. Cache hits stay free even at zero remaining budget.
+    second = await resolve.resolve_search(clean, query, miss_gate=closed_gate)
+    assert second["source"] == "cache" and gate_calls == [1]
