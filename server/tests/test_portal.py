@@ -405,3 +405,21 @@ async def test_head_requests_are_answered(clean, monkeypatch):
     assert home.status_code == 200
     assert 'rel="api-catalog"' in home.headers.get("link", "")
     assert catalog.status_code == 200
+
+
+def test_client_ip_prefers_cf_connecting_ip():
+    # Behind Cloudflare the XFF first hop is a shared CF edge IP; the form
+    # throttle must key on CF-Connecting-IP (the real visitor) when present.
+    from starlette.requests import Request
+
+    def req(headers: list[tuple[bytes, bytes]]) -> Request:
+        return Request({"type": "http", "method": "GET", "path": "/",
+                        "query_string": b"", "headers": headers,
+                        "client": ("127.0.0.1", 1)})
+
+    assert portal._client_ip(req([(b"cf-connecting-ip", b"198.51.100.7"),
+                                  (b"x-forwarded-for", b"172.68.87.44")])) == "198.51.100.7"
+    # No Cloudflare in front (self-host): XFF first hop still works…
+    assert portal._client_ip(req([(b"x-forwarded-for", b"198.51.100.9, 10.0.0.1")])) == "198.51.100.9"
+    # …and direct access falls back to the socket peer.
+    assert portal._client_ip(req([])) == "127.0.0.1"

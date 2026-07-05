@@ -52,8 +52,16 @@ _form_hits: dict[str, list[float]] = {}
 
 
 def _client_ip(request: Request) -> str:
-    # Railway terminates TLS at its proxy; the client is the first hop of
-    # X-Forwarded-For. Fall back to the socket peer for dev / direct access.
+    # aimnis.com is proxied through Cloudflare, so the first X-Forwarded-For hop
+    # that reaches the app is a CLOUDFLARE EDGE IP, not the visitor (verified in
+    # prod logs 2026-07-05: every hop was in CF's 172.64.0.0/13 / 104.16.0.0/13).
+    # Keying per-IP budgets on shared edge IPs would pool strangers' quotas.
+    # CF-Connecting-IP carries the real client; prefer it. Spoofing caveat: a
+    # caller hitting the railway.app hostname directly can forge this header,
+    # but they can rotate real IPs anyway — accepted until we lock ingress to CF.
+    cf = request.headers.get("cf-connecting-ip", "").strip()
+    if cf:
+        return cf
     fwd = request.headers.get("x-forwarded-for", "")
     if fwd:
         return fwd.split(",")[0].strip()

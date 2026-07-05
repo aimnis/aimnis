@@ -162,6 +162,26 @@ async def test_mcp_register_tool_at_capacity_waitlists(clean, monkeypatch):
         "SELECT count(*) FROM waitlist WHERE email='waitme@example.com'") == 1
 
 
+async def test_mcp_anon_budgets_key_on_cf_connecting_ip(clean, monkeypatch):
+    # aimnis.com sits behind Cloudflare: X-Forwarded-For's first hop is a shared
+    # CF edge IP. Budgets must key on CF-Connecting-IP (the real visitor) or two
+    # strangers behind the same edge would drain each other's quotas.
+    monkeypatch.setattr(settings, "gateway_api_keys", [])
+    monkeypatch.setattr(settings, "anon_rpm", 1)
+    edge = {"X-Forwarded-For": "172.68.87.44"}  # same shared CF edge for all
+    async with _client(clean, monkeypatch) as c:
+        a1 = await c.post("/mcp", json=_tools_call("x"),
+                          headers={**_MCP_HEADERS, **edge, "CF-Connecting-IP": "198.51.100.7"})
+        b1 = await c.post("/mcp", json=_tools_call("x"),
+                          headers={**_MCP_HEADERS, **edge, "CF-Connecting-IP": "198.51.100.8"})
+        a2 = await c.post("/mcp", json=_tools_call("x"),
+                          headers={**_MCP_HEADERS, **edge, "CF-Connecting-IP": "198.51.100.7"})
+    # Distinct visitors through one edge get distinct budgets…
+    assert a1.status_code == 200 and b1.status_code == 200
+    # …while the same visitor is still throttled.
+    assert a2.status_code == 429
+
+
 async def test_mcp_register_tool_per_ip_daily_cap(clean, monkeypatch):
     # Key farming from one network is bounded per day; the refusal points at the
     # portal path instead of dead-ending.

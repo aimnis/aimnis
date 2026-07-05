@@ -312,7 +312,14 @@ class McpEdge:
         # of which is logged.
         _h = {k.decode("latin-1").lower(): v.decode("latin-1")
               for k, v in scope.get("headers", [])}
-        client_ip = (_h.get("x-forwarded-for", "").split(",")[0].strip()
+        # aimnis.com rides behind Cloudflare, so the X-Forwarded-For hop that
+        # reaches the app is a CF EDGE IP, not the client (verified in prod logs
+        # 2026-07-05) — keying the anon budgets on it would pool strangers'
+        # quotas per edge. CF-Connecting-IP is the real visitor; prefer it.
+        # (Forgeable only by callers bypassing Cloudflare via the railway.app
+        # hostname — no worse than rotating real IPs; revisit if abused.)
+        client_ip = (_h.get("cf-connecting-ip", "").strip()
+                     or _h.get("x-forwarded-for", "").split(",")[0].strip()
                      or (scope.get("client") or ("-",))[0])
         log.info("mcp %s ua=%r ip=%s",
                  scope.get("method"), _h.get("user-agent", "-"), client_ip)
