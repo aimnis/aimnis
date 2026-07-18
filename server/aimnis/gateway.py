@@ -22,10 +22,10 @@ from __future__ import annotations
 import hmac
 from dataclasses import asdict, dataclass
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import apikeys, db, resolve, stats
+from . import apikeys, db, resolve, stats, telemetry
 from .config import settings
 
 router = APIRouter(prefix="/v1")
@@ -81,9 +81,27 @@ class SearchRequest(BaseModel):
     reject_entry: str | None = None
 
 
+def _client_ip(request: Request) -> str:
+    """Real visitor IP behind Cloudflare — CF-Connecting-IP first (the X-Forwarded-For
+    hop reaching the app is a CF edge, not the client). Only ever hashed, never stored."""
+    h = request.headers
+    return (h.get("cf-connecting-ip", "").strip()
+            or h.get("x-forwarded-for", "").split(",")[0].strip()
+            or (request.client.host if request.client else "-"))
+
+
 @router.post("/search")
-async def search(req: SearchRequest, auth: AuthContext = Depends(require_api_key)) -> dict:
+async def search(
+    req: SearchRequest, request: Request, auth: AuthContext = Depends(require_api_key)
+) -> dict:
     pool = await db.get_pool()
+    # Durable telemetry — one salted-IP-hashed row per request (best-effort inside).
+    await telemetry.record_request(
+        pool, surface="rest", method="POST", path="/v1/search",
+        ip_hash=apikeys.hash_ip(_client_ip(request)),
+        user_agent=request.headers.get("user-agent", "-"),
+        tool="search", auth=("admin" if auth.client_id is None else "keyed"),
+    )
     # BYOK: a client with attached credentials runs their miss on their own quota.
     client_keys = (
         await apikeys.load_client_keys(pool, auth.client_id) if auth.client_id else None
@@ -110,5 +128,8 @@ async def stats_endpoint(_auth: AuthContext = Depends(require_api_key)) -> dict:
     s = await stats.gather(pool)
     clicks = await stats.click_analytics(pool)
     satisfaction = await stats.hit_satisfaction(pool)
+    # Reach (request_log) — includes top_user_agents, which the public /api/stats
+    # withholds (a UA string is low-sensitivity but still per-source detail).
+    reach = await telemetry.reach(pool)
     return {**asdict(s), "click_analytics": asdict(clicks),
-            "hit_satisfaction": asdict(satisfaction)}
+            "hit_satisfaction": asdict(satisfaction), "reach": asdict(reach)}

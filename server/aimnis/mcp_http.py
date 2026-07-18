@@ -58,7 +58,7 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from . import apikeys, db, email as email_mod, flags
+from . import apikeys, db, email as email_mod, flags, telemetry
 from .config import settings
 from .mcp_server import mcp
 
@@ -322,9 +322,28 @@ class McpEdge:
         client_ip = (_h.get("cf-connecting-ip", "").strip()
                      or _h.get("x-forwarded-for", "").split(",")[0].strip()
                      or (scope.get("client") or ("-",))[0])
-        log.info("mcp %s ua=%r ip=%s",
-                 scope.get("method"), _h.get("user-agent", "-"), client_ip)
+        ua = _h.get("user-agent", "-")
+        log.info("mcp %s ua=%r ip=%s", scope.get("method"), ua, client_ip)
 
+        # Durable telemetry — the adoption signal Railway's ephemeral logs don't
+        # keep. _dispatch fills in auth/tool as it learns them; we record exactly
+        # once, best-effort, after the request is served (early-returns included).
+        tele = {"auth": "keyless", "tool": None}
+        try:
+            await self._dispatch(scope, receive, send, tele, client_ip)
+        finally:
+            if settings.request_log_enabled:
+                try:
+                    await telemetry.record_request(
+                        await db.get_pool(), surface="mcp",
+                        method=scope.get("method"), path=scope.get("path"),
+                        ip_hash=apikeys.hash_ip(client_ip), user_agent=ua,
+                        tool=tele["tool"], auth=tele["auth"],
+                    )
+                except Exception:  # noqa: BLE001 — never let telemetry break a response
+                    log.debug("mcp telemetry failed", exc_info=True)
+
+    async def _dispatch(self, scope, receive, send, tele: dict, client_ip: str) -> None:
         async def respond(status: int, message: str = "", *, raw: bytes | None = None) -> None:
             extra = []
             if raw is None:
@@ -349,8 +368,10 @@ class McpEdge:
             return
 
         presented = _presented_key(scope)
+        tele["auth"] = "keyless" if presented is None else "keyed"
 
         if presented and _is_admin(presented):
+            tele["auth"] = "admin"
             id_token = apikeys.current_client_id.set("admin")
             try:
                 await self._manager.handle_request(scope, receive, send)
@@ -369,6 +390,7 @@ class McpEdge:
             chunks.append(message.get("body", b""))
             more = message.get("more_body", False)
         body = b"".join(chunks)
+        tele["tool"] = ", ".join(sorted(_called_tools(body))) or None
 
         is_tool_call = scope.get("method") == "POST" and _wants_tool_call(body)
         client_keys = None

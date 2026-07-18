@@ -161,6 +161,10 @@ class Settings(BaseSettings):
     anon_miss_rpd: int = 10
     anon_rpm: int = 10
     anon_reg_rpd: int = 3
+    # Durable per-request telemetry (request_log): the adoption signal Railway's
+    # ephemeral logs don't retain — one salted-IP-hashed row per hosted-edge
+    # request. false ⇒ nothing recorded (kill switch). Never stores a raw IP.
+    request_log_enabled: bool = True
     # BYOK — a client may attach their own OpenRouter / search-provider keys; their
     # misses then spend THEIR quota, so they get much higher caps without touching
     # the shared ceiling ("your keys, your limits"). Keys are pgcrypto-encrypted

@@ -94,6 +94,24 @@ async def test_mcp_keyless_tool_call_runs_free(clean, monkeypatch):
     assert await clean.fetchval("SELECT count(*) FROM api_request") == 0
 
 
+async def test_mcp_edge_records_request_telemetry(clean, monkeypatch):
+    # Every hosted-edge request lands one salted-IP-hashed row in request_log — the
+    # durable adoption signal Railway's ephemeral logs don't retain.
+    monkeypatch.setattr(settings, "gateway_api_keys", [])
+    async with _client(clean, monkeypatch) as c:
+        await c.post("/mcp", headers=_MCP_HEADERS, json=_TOOLS_LIST)
+        await c.post("/mcp", headers={**_MCP_HEADERS, "User-Agent": "probe/1.0"},
+                     json=_tools_call("x"))
+    rows = await clean.fetch(
+        "SELECT surface, auth, tool, ip_hash, user_agent FROM request_log ORDER BY id")
+    assert len(rows) == 2
+    assert all(r["surface"] == "mcp" and r["auth"] == "keyless" for r in rows)
+    assert all(r["ip_hash"] for r in rows)          # hashed identity, never a raw IP
+    assert rows[0]["tool"] is None                  # tools/list invokes no tool
+    assert rows[1]["tool"] == "stats"               # the tools/call records its target
+    assert rows[1]["user_agent"] == "probe/1.0"
+
+
 async def test_mcp_keyless_kill_switch_restores_onboarding(clean, monkeypatch):
     # anon_search_enabled=False reverts key-less tool calls to the onboarding
     # message (isError result pointing at register) — the pre-free-tier behavior.

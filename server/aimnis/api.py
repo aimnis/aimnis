@@ -21,7 +21,7 @@ from dataclasses import asdict
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from . import citations, db, embedding, stats
+from . import citations, db, embedding, stats, telemetry
 from .config import settings
 from .mcp_http import mcp_edge
 
@@ -117,6 +117,7 @@ async def api_stats():
     clicks = await stats.click_analytics(pool)
     storage = await stats.storage_stats(pool)
     satisfaction = await stats.hit_satisfaction(pool)
+    reach = await telemetry.reach(pool)
     public = asdict(s)
     public.pop("top_queries", None)  # gated → /v1/stats
     return JSONResponse({
@@ -133,6 +134,21 @@ async def api_stats():
         # aggregate acceptance of served hits (explicit rejects + implicit near-
         # duplicate retries); per-client sequences never leave the database
         "hit_satisfaction": asdict(satisfaction),
+        # adoption reach — distinct-source + tool-call aggregates. top_user_agents
+        # is withheld here (per-source detail) and served only from /v1/stats.
+        "reach": {
+            "requests_total": reach.requests_total,
+            "tool_calls_total": reach.tool_calls_total,
+            "sources_total": reach.sources_total,
+            "sources_7d": reach.sources_7d,
+            "sources_24h": reach.sources_24h,
+            "keyless_sources": reach.keyless_sources,
+            "keyed_sources": reach.keyed_sources,
+            "daily": [
+                {"day": d, "requests": rq, "tool_calls": tc, "sources": sc}
+                for (d, rq, tc, sc) in reach.daily
+            ],
+        },
     })
 
 
@@ -143,8 +159,9 @@ async def dashboard():
     series = await stats.flywheel_series(pool)
     satisfaction = await stats.hit_satisfaction(pool)
     storage = await stats.storage_stats(pool)
+    reach = await telemetry.reach(pool)
     asof = await pool.fetchval("SELECT now()")
-    return _render_page(s, series, satisfaction, storage, str(asof))
+    return _render_page(s, series, satisfaction, storage, reach, str(asof))
 
 
 # --------------------------------------------------------------------------- #
@@ -214,7 +231,7 @@ def _human_bytes(n: float) -> str:
     return f"{n:.1f} TB"
 
 
-def _render_page(s, series: list, satisfaction, storage, asof: str) -> str:
+def _render_page(s, series: list, satisfaction, storage, reach, asof: str) -> str:
     per_entry = storage.bytes_per_entry
     proj_1m = _human_bytes(per_entry * 1_000_000) if per_entry else "—"
     # Citation clicks were replaced here by hit satisfaction: agents consume the
@@ -234,6 +251,10 @@ def _render_page(s, series: list, satisfaction, storage, asof: str) -> str:
         _tile("Hit satisfaction", sat_value, sat_sub),
         _tile("Pool storage", _human_bytes(storage.total_bytes),
               f"~{_human_bytes(per_entry)}/entry · ~{proj_1m} at 1M"),
+        _tile("Distinct sources", f"{reach.sources_total}",
+              f"{reach.sources_7d} in 7d · {reach.sources_24h} in 24h"),
+        _tile("Tool calls", f"{reach.tool_calls_total}",
+              f"{reach.requests_total} edge requests"),
     ])
     # NB: the most-reused-query / most-followed-source lists are intentionally NOT
     # rendered on this public page — raw query text could surface a secret the

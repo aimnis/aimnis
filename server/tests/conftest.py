@@ -86,6 +86,7 @@ async def clean():
     await pool.execute("TRUNCATE api_client CASCADE")  # cascades to api_request (FK)
     await pool.execute("TRUNCATE waitlist")
     await pool.execute("TRUNCATE anon_usage")
+    await pool.execute("TRUNCATE request_log")
     # Registration defaults to open; reset in case a test paused it.
     await pool.execute(
         "INSERT INTO service_flag (name, enabled) VALUES ('registration_open', true) "
