@@ -118,6 +118,7 @@ async def api_stats():
     storage = await stats.storage_stats(pool)
     satisfaction = await stats.hit_satisfaction(pool)
     reach = await telemetry.reach(pool)
+    latency = await stats.latency_stats(pool)
     public = asdict(s)
     public.pop("top_queries", None)  # gated → /v1/stats
     return JSONResponse({
@@ -149,6 +150,17 @@ async def api_stats():
                 for (d, rq, tc, sc) in reach.daily
             ],
         },
+        # per-search latency (ms) by outcome — the "instant from cache, escalate on
+        # miss" promise, measured. Aggregate; per-app UAs are gated to /v1/stats.
+        "latency": {
+            "samples": latency.samples,
+            "overall_p50_ms": latency.overall_p50_ms,
+            "overall_p95_ms": latency.overall_p95_ms,
+            "by_outcome": [
+                {"outcome": o, "count": n, "p50_ms": p50, "p95_ms": p95}
+                for (o, n, p50, p95) in latency.by_outcome
+            ],
+        },
     })
 
 
@@ -160,8 +172,9 @@ async def dashboard():
     satisfaction = await stats.hit_satisfaction(pool)
     storage = await stats.storage_stats(pool)
     reach = await telemetry.reach(pool)
+    latency = await stats.latency_stats(pool)
     asof = await pool.fetchval("SELECT now()")
-    return _render_page(s, series, satisfaction, storage, reach, str(asof))
+    return _render_page(s, series, satisfaction, storage, reach, latency, str(asof))
 
 
 # --------------------------------------------------------------------------- #
@@ -231,7 +244,12 @@ def _human_bytes(n: float) -> str:
     return f"{n:.1f} TB"
 
 
-def _render_page(s, series: list, satisfaction, storage, reach, asof: str) -> str:
+def _fmt_ms(ms: float) -> str:
+    """Compact latency label: sub-second in ms, else seconds."""
+    return f"{ms:.0f} ms" if ms < 1000 else f"{ms / 1000:.1f} s"
+
+
+def _render_page(s, series: list, satisfaction, storage, reach, latency, asof: str) -> str:
     per_entry = storage.bytes_per_entry
     proj_1m = _human_bytes(per_entry * 1_000_000) if per_entry else "—"
     # Citation clicks were replaced here by hit satisfaction: agents consume the
@@ -242,6 +260,20 @@ def _render_page(s, series: list, satisfaction, storage, reach, asof: str) -> st
         f"{satisfaction.hits_scored} hits scored · {satisfaction.explicit_rejects} rejected"
         if satisfaction.hits_scored else "no scored hits yet"
     )
+    # Latency, split hit vs miss (the escalation cost) in the sub-line.
+    _p50_by = {o: p50 for (o, _n, p50, _p95) in latency.by_outcome}
+    _hit_p50 = _p50_by.get("hit_exact", _p50_by.get("hit_semantic"))
+    _miss_p50 = _p50_by.get("miss")
+    if latency.samples:
+        lat_value = _fmt_ms(latency.overall_p50_ms)
+        _bits = [f"p95 {_fmt_ms(latency.overall_p95_ms)}"]
+        if _hit_p50 is not None:
+            _bits.append(f"hit {_fmt_ms(_hit_p50)}")
+        if _miss_p50 is not None:
+            _bits.append(f"miss {_fmt_ms(_miss_p50)}")
+        lat_sub = " · ".join(_bits)
+    else:
+        lat_value, lat_sub = "—", "no timed searches yet"
     tiles = "".join([
         _tile("Cache hit rate", f"{s.hit_rate:.0%}", f"{s.hits} hits / {s.lookups_total} lookups"),
         _tile("Recent hit rate", f"{s.recent_hit_rate:.0%}", f"last {s.recent_window} lookups"),
@@ -255,6 +287,7 @@ def _render_page(s, series: list, satisfaction, storage, reach, asof: str) -> st
               f"{reach.sources_7d} in 7d · {reach.sources_24h} in 24h"),
         _tile("Tool calls", f"{reach.tool_calls_total}",
               f"{reach.requests_total} edge requests"),
+        _tile("Search latency", lat_value, lat_sub),
     ])
     # NB: the most-reused-query / most-followed-source lists are intentionally NOT
     # rendered on this public page — raw query text could surface a secret the

@@ -111,6 +111,7 @@ async def search(
     result = await resolve.resolve_search(
         pool, req.query, niche=req.niche, client_keys=client_keys,
         client_id=auth.client_id or "admin", reject_entry=req.reject_entry,
+        user_agent=request.headers.get("user-agent"),
     )
     # `format_for_agent` gives the ready-to-render text; include it so a thin client
     # doesn't need to replicate rendering, while keeping the structured fields too.
@@ -131,5 +132,12 @@ async def stats_endpoint(_auth: AuthContext = Depends(require_api_key)) -> dict:
     # Reach (request_log) — includes top_user_agents, which the public /api/stats
     # withholds (a UA string is low-sensitivity but still per-source detail).
     reach = await telemetry.reach(pool)
+    latency = await stats.latency_stats(pool)
+    # Which apps ran searches (lookup_event.user_agent) — per-source detail, gated.
+    search_apps = await stats.search_user_agents(pool)
     return {**asdict(s), "click_analytics": asdict(clicks),
-            "hit_satisfaction": asdict(satisfaction), "reach": asdict(reach)}
+            "hit_satisfaction": asdict(satisfaction), "reach": asdict(reach),
+            "latency": asdict(latency),
+            "search_user_agents": [
+                {"user_agent": ua, "searches": n, "hits": h} for (ua, n, h) in search_apps
+            ]}

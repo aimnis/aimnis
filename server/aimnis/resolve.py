@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -248,7 +249,8 @@ async def _cache_lookup(
 
 async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = None,
                          client_keys=None, client_id: str | None = None,
-                         reject_entry: str | None = None, miss_gate=None) -> dict:
+                         reject_entry: str | None = None, miss_gate=None,
+                         user_agent: str | None = None) -> dict:
     # BYOK: `client_keys` (apikeys.ClientKeys) carries the calling client's own
     # upstream credentials. Their misses spend their quota (search + distill);
     # everything else — cache lookup, scrubbing, pooling — is identical. Used only
@@ -266,6 +268,14 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
     # consult it — hits cost ~nothing to serve, so they stay free and unmetered
     # (that asymmetry is the whole free-tier design; see mcp_http).
     #
+    # End-to-end latency clock: spans embed + cache lookup for a hit; + live search
+    # + distill for a miss. Read at each record_event so lookup_event.latency_ms
+    # reflects what the caller actually waited for, split by outcome.
+    t0 = time.monotonic()
+
+    def _elapsed_ms() -> int:
+        return int((time.monotonic() - t0) * 1000)
+
     # Scrub FIRST: secrets/PII must never reach a third party (Brave/OpenRouter)
     # or the pool. Everything downstream uses the redacted text; a secret-dense
     # query is served live-only (safe_to_pool=False) and never persisted.
@@ -306,6 +316,8 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
             client_hash=client_hash,
             embedding=embedding,
             rejected_entry=reject_entry,
+            latency_ms=_elapsed_ms(),
+            user_agent=user_agent,
         )
         return {
             "source": "cache",
@@ -343,7 +355,8 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
     except SearchError as exc:
         await stats.record_event(db, query_hash=h, outcome="error", niche=niche,
                                  client_hash=client_hash, embedding=embedding,
-                                 rejected_entry=reject_entry)
+                                 rejected_entry=reject_entry,
+                                 latency_ms=_elapsed_ms(), user_agent=user_agent)
         return {"source": "error", "error": str(exc), "results": []}
 
     # Stamp each source with when we fetched it, so per-source freshness travels
@@ -357,7 +370,8 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
     if not results:
         await stats.record_event(db, query_hash=h, outcome="error", niche=niche,
                                  client_hash=client_hash, embedding=embedding,
-                                 rejected_entry=reject_entry)
+                                 rejected_entry=reject_entry,
+                                 latency_ms=_elapsed_ms(), user_agent=user_agent)
         return {"source": "live", "results": [], "answer": None, "distilled": False,
                 "entry_id": None}
 
@@ -441,6 +455,7 @@ async def resolve_search(db: asyncpg.Pool, query: str, *, niche: str | None = No
         distance=best_distance, rerank_score=rerank_score,
         result_count=len(served),
         client_hash=client_hash, embedding=embedding, rejected_entry=reject_entry,
+        latency_ms=_elapsed_ms(), user_agent=user_agent,
     )
     return {
         "source": "live",

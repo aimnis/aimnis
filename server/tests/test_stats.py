@@ -279,3 +279,42 @@ async def test_satisfaction_ignores_untracked_and_out_of_window(clean):
 
     sat = await stats.hit_satisfaction(clean)
     assert (sat.hits_scored, sat.dissatisfied) == (1, 0)
+
+
+async def test_latency_stats_by_outcome(clean):
+    e = await _seed_entry(clean, query_text="q", query_hash="h", hit_count=1)
+    await stats.record_event(clean, query_hash="h", outcome="hit_exact", entry_id=e,
+                             latency_ms=400, user_agent="claude-code/2.0")
+    await stats.record_event(clean, query_hash="h", outcome="hit_exact", entry_id=e,
+                             latency_ms=600, user_agent="claude-code/2.0")
+    await stats.record_event(clean, query_hash="m", outcome="miss",
+                             latency_ms=16000, user_agent="opencode/1.0")
+    lat = await stats.latency_stats(clean)
+    assert lat.samples == 3
+    bo = {o: (n, p50, p95) for (o, n, p50, p95) in lat.by_outcome}
+    assert bo["hit_exact"][0] == 2
+    assert bo["hit_exact"][1] == 500.0        # p50 of [400, 600]
+    assert bo["miss"] == (1, 16000.0, 16000.0)
+
+
+async def test_latency_stats_empty(clean):
+    lat = await stats.latency_stats(clean)
+    assert lat.samples == 0
+    assert lat.overall_p50_ms == 0.0
+    assert lat.by_outcome == []
+
+
+async def test_search_user_agents_breakdown(clean):
+    e = await _seed_entry(clean, query_text="q", query_hash="h", hit_count=1)
+    await stats.record_event(clean, query_hash="h", outcome="hit_exact", entry_id=e,
+                             user_agent="claude-code/2.0")
+    await stats.record_event(clean, query_hash="h", outcome="hit_semantic", entry_id=e,
+                             user_agent="claude-code/2.0")
+    await stats.record_event(clean, query_hash="m", outcome="miss", user_agent="opencode/1.0")
+    await stats.record_event(clean, query_hash="e", outcome="error", user_agent="opencode/1.0")
+    await stats.record_event(clean, query_hash="n", outcome="miss")   # no UA → (none)
+    apps = await stats.search_user_agents(clean)
+    d = {ua: (n, h) for (ua, n, h) in apps}
+    assert d["claude-code/2.0"] == (2, 2)     # two searches, both hits
+    assert d["opencode/1.0"] == (1, 0)        # error row excluded; one miss, no hits
+    assert d["(none)"] == (1, 0)              # stdio/local search, unattributed

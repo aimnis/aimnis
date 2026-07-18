@@ -148,7 +148,7 @@ async def search(
     result = await resolve.resolve_search(
         db, query, client_keys=apikeys.current_client_keys.get(),
         client_id=apikeys.current_client_id.get(), reject_entry=reject_entry,
-        miss_gate=miss_gate,
+        miss_gate=miss_gate, user_agent=apikeys.current_user_agent.get(),
     )
     return resolve.format_for_agent(result)
 

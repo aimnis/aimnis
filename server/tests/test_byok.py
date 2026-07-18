@@ -189,7 +189,8 @@ async def test_rest_edge_delivers_client_keys(clean, monkeypatch):
 
     captured: dict = {}
 
-    async def fake_resolve(pool, query, *, niche=None, client_keys=None, client_id=None, reject_entry=None):
+    async def fake_resolve(pool, query, *, niche=None, client_keys=None, client_id=None,
+                           reject_entry=None, user_agent=None):
         captured["ck"] = client_keys
         return {"source": "cache", "match": "exact", "distance": 0.0,
                 "answer": "ok", "results": [], "model": "m", "entry_id": 1}
@@ -209,7 +210,7 @@ async def test_mcp_edge_delivers_client_keys(clean, monkeypatch):
     captured: dict = {}
 
     async def fake_resolve(pool, query, *, niche=None, client_keys=None, client_id=None,
-                           reject_entry=None, miss_gate=None):
+                           reject_entry=None, miss_gate=None, user_agent=None):
         captured["ck"] = client_keys
         # Keyed callers must never be miss-gated — the free-tier budget is anon-only.
         captured["gate"] = miss_gate

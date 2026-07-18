@@ -46,6 +46,13 @@ current_anon_ip: ContextVar[str | None] = ContextVar(
     "aimnis_anon_ip", default=None
 )
 
+# Request-scoped calling application (User-Agent), set by the hosted edges so the
+# search tool can attribute each lookup to the app that made it. Default None ⇒
+# stdio/local (no UA). Recorded on lookup_event.user_agent.
+current_user_agent: ContextVar[str | None] = ContextVar(
+    "aimnis_user_agent", default=None
+)
+
 
 def generate_key() -> str:
     """A fresh opaque client key: `aim_<43 url-safe chars>`."""

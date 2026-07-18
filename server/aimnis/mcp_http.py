@@ -329,9 +329,14 @@ class McpEdge:
         # keep. _dispatch fills in auth/tool as it learns them; we record exactly
         # once, best-effort, after the request is served (early-returns included).
         tele = {"auth": "keyless", "tool": None}
+        # Expose the calling app to the search tool (which reads it off this
+        # contextvar and records it on lookup_event) — set for the whole request
+        # so every dispatch path, admin included, attributes its search.
+        ua_token = apikeys.current_user_agent.set(ua)
         try:
             await self._dispatch(scope, receive, send, tele, client_ip)
         finally:
+            apikeys.current_user_agent.reset(ua_token)
             if settings.request_log_enabled:
                 try:
                     await telemetry.record_request(

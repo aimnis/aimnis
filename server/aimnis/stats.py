@@ -52,6 +52,8 @@ async def record_event(
     client_hash: str | None = None,
     embedding: list[float] | None = None,
     rejected_entry: str | None = None,
+    latency_ms: int | None = None,
+    user_agent: str | None = None,
 ) -> None:
     """Append one lookup to the log. Best-effort: observability must never break
     a search, so a logging failure is swallowed rather than propagated.
@@ -63,13 +65,16 @@ async def record_event(
     error/empty replies) — averaged for grounding-richness-per-reply.
     `client_hash` + `embedding` power hit-satisfaction detection (a near-duplicate
     re-ask by the same client within the window marks the prior hit dissatisfied);
-    `rejected_entry` records an explicit reject_entry=<id> retry."""
+    `rejected_entry` records an explicit reject_entry=<id> retry. `latency_ms` is
+    the end-to-end resolve_search time and `user_agent` the calling application
+    (NULL for stdio/local) — both tied to this search's outcome for per-outcome
+    latency and per-app breakdowns."""
     try:
         await pool.execute(
             "INSERT INTO lookup_event "
             "(query_hash, outcome, distance, entry_id, niche, rerank_score, result_count, "
-            " client_hash, embedding, rejected_entry) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+            " client_hash, embedding, rejected_entry, latency_ms, user_agent) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
             query_hash,
             outcome,
             distance,
@@ -80,9 +85,61 @@ async def record_event(
             client_hash,
             embedding,
             rejected_entry,
+            latency_ms,
+            (user_agent or "")[:512] or None,
         )
     except Exception:  # noqa: BLE001 — never let stats logging fail the answer path
         pass
+
+
+@dataclass(frozen=True)
+class LatencyStats:
+    """Per-outcome search latency (ms) from lookup_event.latency_ms. p50/p95 by
+    outcome make the 'instant from cache, escalate on miss' promise measurable.
+    Older lookups predate the column (NULL) and are excluded."""
+
+    samples: int                 # lookups with a recorded latency
+    overall_p50_ms: float
+    overall_p95_ms: float
+    by_outcome: list             # [(outcome, count, p50_ms, p95_ms), ...]
+
+
+async def latency_stats(pool: asyncpg.Pool) -> LatencyStats:
+    ov = await pool.fetchrow(
+        "SELECT count(*) AS n, "
+        "percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms) AS p50, "
+        "percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95 "
+        "FROM lookup_event WHERE latency_ms IS NOT NULL"
+    )
+    by = await pool.fetch(
+        "SELECT outcome, count(*) AS n, "
+        "percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms) AS p50, "
+        "percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95 "
+        "FROM lookup_event WHERE latency_ms IS NOT NULL "
+        "GROUP BY outcome ORDER BY outcome"
+    )
+    return LatencyStats(
+        samples=ov["n"] or 0,
+        overall_p50_ms=float(ov["p50"] or 0.0),
+        overall_p95_ms=float(ov["p95"] or 0.0),
+        by_outcome=[
+            (r["outcome"], r["n"], float(r["p50"] or 0.0), float(r["p95"] or 0.0)) for r in by
+        ],
+    )
+
+
+async def search_user_agents(pool: asyncpg.Pool, *, top_n: int = 10) -> list:
+    """Which client applications ran searches (from lookup_event.user_agent), with
+    each app's hit count. Per-source detail → gated to the authenticated /v1/stats.
+    stdio/local searches carry no UA and bucket as '(none)'."""
+    rows = await pool.fetch(
+        "SELECT coalesce(user_agent, '(none)') AS ua, count(*) AS searches, "
+        "count(*) FILTER (WHERE outcome IN ('hit_exact','hit_semantic')) AS hits "
+        "FROM lookup_event WHERE outcome <> 'error' "
+        "GROUP BY coalesce(user_agent, '(none)') ORDER BY searches DESC, ua LIMIT $1",
+        top_n,
+    )
+    return [(r["ua"], r["searches"], r["hits"]) for r in rows]
 
 
 async def gather(pool: asyncpg.Pool, *, recent_window: int = 20, top_n: int = 5) -> Stats:
